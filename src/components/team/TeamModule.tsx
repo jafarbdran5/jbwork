@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { useI18n } from '../../lib/i18n';
 import { useAuth, CreateUserInput } from '../../lib/auth';
 import { db } from '../../lib/firebase';
-import { collection, query, orderBy, onSnapshot, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, doc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { UserProfile, UserRole } from '../../types';
+import { getLocalUsers, saveLocalUser } from '../../lib/offlineStore';
 import { logAuditAndEvent } from '../../lib/audit';
 import { 
   Users, 
@@ -79,16 +80,116 @@ export const TeamModule: React.FC = () => {
   const [resetFeedback, setResetFeedback] = useState<{ email: string; success: boolean; msg: string } | null>(null);
 
   useEffect(() => {
-    const q = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snap) => {
-      setMembers(snap.docs.map(d => d.data() as UserProfile));
+    // 1. Initial hydration from cache and current profile
+    const cachedUsers = getLocalUsers();
+    let initialList: UserProfile[] = [...cachedUsers];
+
+    if (userProfile && !initialList.some(u => u.uid === userProfile.uid || (u.email && u.email.toLowerCase() === userProfile.email?.toLowerCase()))) {
+      initialList.unshift(userProfile);
+      saveLocalUser(userProfile);
+    }
+
+    // Default fallback if no users are present anywhere
+    if (initialList.length === 0) {
+      const defaultOwner: UserProfile = {
+        uid: userProfile?.uid || 'super_admin_jaafar',
+        email: userProfile?.email || 'jfrbdran@gmail.com',
+        displayName: userProfile?.displayName || 'جعفر بدران (Jaafar Bdran)',
+        role: 'super_admin',
+        status: 'active',
+        isActive: true,
+        jobTitle: 'المالك والمشرف العام',
+        phone: '+966500000000',
+        permissions: {
+          casesView: true,
+          casesCreate: true,
+          casesEdit: true,
+          casesDelete: true,
+          requestsView: true,
+          requestsCreate: true,
+          requestsEdit: true,
+          financeView: true,
+          financeManage: true,
+          employeeEarningsView: true,
+          employeeEarningsManage: true,
+          personalFinanceView: true,
+          personalFinanceManage: true,
+          teamManage: true,
+          securityView: true,
+          settingsManage: true
+        },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+      initialList = [defaultOwner];
+      saveLocalUser(defaultOwner);
+      // Also persist to Firestore users collection in background
+      setDoc(doc(db, 'users', defaultOwner.uid), defaultOwner, { merge: true }).catch(() => {});
+    }
+
+    setMembers(initialList);
+    setLoading(false);
+
+    // 2. Real-time listener without strict orderBy to avoid omitting documents missing timestamp
+    const usersCol = collection(db, 'users');
+    const unsubscribe = onSnapshot(usersCol, (snap) => {
+      const mergedMap = new Map<string, UserProfile>();
+
+      // Put cached first
+      cachedUsers.forEach((u: any) => {
+        if (u && (u.uid || u.email)) {
+          mergedMap.set(u.uid || u.email, u);
+        }
+      });
+
+      // Put current logged-in profile
+      if (userProfile) {
+        mergedMap.set(userProfile.uid, userProfile);
+        saveLocalUser(userProfile);
+      }
+
+      // Put Firestore documents
+      if (!snap.empty) {
+        snap.docs.forEach(d => {
+          const uData = { ...d.data(), uid: d.id } as UserProfile;
+          mergedMap.set(uData.uid, uData);
+          saveLocalUser(uData);
+        });
+      }
+
+      const allMembers = Array.from(mergedMap.values());
+
+      // Sort by role hierarchy: super_admin -> admin -> manager -> employee -> viewer
+      const roleOrder: Record<string, number> = {
+        super_admin: 0,
+        admin: 1,
+        manager: 2,
+        employee: 3,
+        viewer: 4
+      };
+
+      allMembers.sort((a, b) => {
+        const orderA = roleOrder[a.role] ?? 99;
+        const orderB = roleOrder[b.role] ?? 99;
+        if (orderA !== orderB) return orderA - orderB;
+        return (a.displayName || '').localeCompare(b.displayName || '');
+      });
+
+      setMembers(allMembers.length > 0 ? allMembers : initialList);
       setLoading(false);
     }, (err) => {
       console.warn('Team snapshot fallback:', err);
+      const fallbackLocal = getLocalUsers();
+      if (fallbackLocal.length > 0) {
+        setMembers(fallbackLocal);
+      } else if (userProfile) {
+        setMembers([userProfile]);
+      }
       setLoading(false);
     });
+
     return () => unsubscribe();
-  }, []);
+  }, [userProfile]);
 
   // Generate strong random password
   const handleGeneratePassword = () => {

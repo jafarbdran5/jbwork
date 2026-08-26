@@ -436,7 +436,9 @@ export interface SyncLogEntry {
 
 export type SecurityActionType = 
   | 'successful_login' 
+  | 'login_success'
   | 'failed_login' 
+  | 'login_failed'
   | 'unauthorized_access' 
   | 'password_changed' 
   | 'google_linked' 
@@ -447,6 +449,7 @@ export type SecurityActionType =
   | 'user_suspended' 
   | 'user_reactivated'
   | 'user_deleted'
+  | 'super_admin_setup'
   | 'security_alert';
 
 export interface SecurityLogEntry {

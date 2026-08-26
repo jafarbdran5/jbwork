@@ -34,6 +34,7 @@ import { ApprovalCenterModule } from './components/approvals/ApprovalCenterModul
 import { BackupCenterModule } from './components/backup/BackupCenterModule';
 import { MyDayModule } from './components/dashboard/MyDayModule';
 import { JbAiAssistantModal } from './components/ai/JbAiAssistantModal';
+import { ChangePasswordModal } from './components/auth/ChangePasswordModal';
 
 import {
   LayoutDashboard,
@@ -71,7 +72,8 @@ import {
   HardDrive,
   CheckCheck,
   Database,
-  CalendarCheck
+  CalendarCheck,
+  KeyRound
 } from 'lucide-react';
 
 function MainAppShell() {
@@ -88,6 +90,7 @@ function MainAppShell() {
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState<boolean>(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
   const [isAiModalOpen, setIsAiModalOpen] = useState<boolean>(false);
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState<boolean>(false);
 
   // Online / Offline monitor
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
@@ -272,6 +275,15 @@ function MainAppShell() {
             {language === 'ar' ? 'EN' : 'عربي'}
           </button>
 
+          {/* Change Password */}
+          <button
+            onClick={() => setIsChangePasswordOpen(true)}
+            className="p-2 rounded-md bg-[#18181B] hover:bg-cyan-950/40 border border-[#27272A] hover:border-cyan-800 text-[#A1A1AA] hover:text-cyan-300 transition-colors cursor-pointer"
+            title={isRTL ? 'تغيير كلمة المرور' : 'Change Password'}
+          >
+            <KeyRound className="w-4 h-4" />
+          </button>
+
           {/* Sign Out */}
           <button
             onClick={signOut}
@@ -325,7 +337,7 @@ function MainAppShell() {
             })}
           </nav>
 
-          <div className="mt-auto pt-4 border-t border-[#27272A]">
+          <div className="mt-auto pt-4 border-t border-[#27272A] space-y-2">
             <div className="flex items-center gap-3 px-3 py-2 bg-[#18181B] border border-[#27272A] rounded-lg">
               <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-sky-400 flex items-center justify-center text-[10px] font-bold text-white shrink-0">
                 JB
@@ -335,6 +347,17 @@ function MainAppShell() {
                 <span className="text-[10px] text-[#71717A] font-mono uppercase">{userProfile?.role}</span>
               </div>
             </div>
+
+            <button
+              type="button"
+              onClick={() => setIsChangePasswordOpen(true)}
+              className="w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-cyan-300 hover:bg-[#18181B] transition-colors border border-transparent hover:border-cyan-900/50 cursor-pointer"
+            >
+              <span className="flex items-center gap-2">
+                <KeyRound className="w-3.5 h-3.5 text-cyan-400" />
+                <span>{isRTL ? 'تغيير كلمة المرور' : 'Change Password'}</span>
+              </span>
+            </button>
           </div>
         </aside>
 
@@ -575,6 +598,14 @@ function MainAppShell() {
         />
       )}
 
+      {/* Change Password Modal */}
+      {isChangePasswordOpen && (
+        <ChangePasswordModal
+          isOpen={isChangePasswordOpen}
+          onClose={() => setIsChangePasswordOpen(false)}
+        />
+      )}
+
       {/* Global Command Palette */}
       {isCommandPaletteOpen && (
         <CommandPalette
@@ -612,9 +643,9 @@ export default function App() {
 }
 
 function AuthWrapper() {
-  const { userProfile, loading } = useAuth();
+  const { userProfile, isLoading } = useAuth();
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center">
         <div className="text-center space-y-3">

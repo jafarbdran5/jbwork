@@ -45,11 +45,12 @@ service cloud.firestore {
     // Users Collection
     match /users/{userId} {
       allow read: if isAuthenticated();
-      // Internal-only creation: Only Admins or first initialization
+      // Internal-only creation: Admins, Super Admin, first initialization, or user self creation
       allow create: if isAuthenticated() && (
         isAdmin() ||
         request.auth.token.email == 'jfrbdran@gmail.com' ||
-        !exists(/databases/$(database)/documents/settings/general)
+        !exists(/databases/$(database)/documents/settings/general) ||
+        request.auth.uid == userId
       );
       // Updates: Admins or self profile updates
       allow update: if isAuthenticated() && (

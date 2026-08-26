@@ -1079,34 +1079,27 @@ export async function runFullGoogleSync(
   const targetSpreadsheetId = config.websiteSpreadsheetId || '1KNunZ9a48CBh6vvg9fkoOM4MrIPwUEptQ6YrznKqJUQ';
   if (targetSpreadsheetId) {
     try {
-      // Determine which sheets to sync: check configured sheets or discover all available sheets
+      // STRICT USER REQUIREMENT: Only sync from the 'cases' sheet to avoid mixing requests
       let sheetsToSync: string[] = [];
-      if (config.websiteDiscoveredSheets && config.websiteDiscoveredSheets.length > 0) {
-        sheetsToSync = config.websiteDiscoveredSheets;
-      } else if (config.websiteSheetName) {
+      if (config.websiteSheetName && config.websiteSheetName.toLowerCase() === 'cases') {
         sheetsToSync = [config.websiteSheetName];
-      }
-
-      // If no sheet list cached, safely query spreadsheet metadata
-      if (sheetsToSync.length === 0) {
+      } else {
+        // Query spreadsheet metadata to find the 'cases' sheet
         try {
           const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}?fields=sheets.properties.title`;
           const metaRes = await fetchGoogleApi<{ sheets?: Array<{ properties: { title: string } }> }>(metaUrl, token);
-          sheetsToSync = (metaRes.sheets || []).map(s => s.properties.title);
+          const allTitles = (metaRes.sheets || []).map(s => s.properties.title);
+          const foundCasesSheet = allTitles.find(t => t.toLowerCase() === 'cases' || t.toLowerCase().includes('case'));
+          if (foundCasesSheet) {
+            sheetsToSync = [foundCasesSheet];
+          } else {
+            sheetsToSync = allTitles.length > 0 ? [allTitles[0]] : ['cases'];
+          }
         } catch (mErr) {
-          console.warn('Metadata discovery error, using default standard sheet names [cases, request]:', mErr);
-          sheetsToSync = ['cases', 'request'];
+          console.warn('Metadata discovery error, using cases sheet name:', mErr);
+          sheetsToSync = ['cases'];
         }
       }
-
-      // Prioritize cases sheet first if present
-      sheetsToSync.sort((a, b) => {
-        const aIsCase = a.toLowerCase().includes('case') || a.includes('قض');
-        const bIsCase = b.toLowerCase().includes('case') || b.includes('قض');
-        if (aIsCase && !bIsCase) return -1;
-        if (!aIsCase && bIsCase) return 1;
-        return 0;
-      });
 
       for (const sheetName of sheetsToSync) {
         try {

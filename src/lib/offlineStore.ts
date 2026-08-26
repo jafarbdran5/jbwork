@@ -15,6 +15,41 @@ export interface LocalAttachmentItem {
 
 const LOCAL_ATTACHMENT_KEY = 'jb_local_case_attachments';
 const DEVICE_TRUST_KEY = 'jb_device_trusted';
+const LOCAL_USERS_KEY = 'jb_local_team_members';
+
+export function getLocalUsers(): any[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_USERS_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw);
+  } catch (e) {
+    return [];
+  }
+}
+
+export function saveLocalUser(user: any) {
+  try {
+    const current = getLocalUsers();
+    const existingIndex = current.findIndex((u: any) => u.uid === user.uid || (u.email && u.email === user.email));
+    if (existingIndex >= 0) {
+      current[existingIndex] = { ...current[existingIndex], ...user };
+    } else {
+      current.unshift(user);
+    }
+    localStorage.setItem(LOCAL_USERS_KEY, JSON.stringify(current));
+  } catch (e) {
+    console.error('Failed to save user locally:', e);
+  }
+}
+
+export function removeLocalUser(uid: string) {
+  try {
+    const current = getLocalUsers().filter((u: any) => u.uid !== uid);
+    localStorage.setItem(LOCAL_USERS_KEY, JSON.stringify(current));
+  } catch (e) {
+    console.error(e);
+  }
+}
 
 export function getLocalAttachments(caseId?: string): LocalAttachmentItem[] {
   try {

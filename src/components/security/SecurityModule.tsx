@@ -31,6 +31,7 @@ import {
   HelpCircle
 } from 'lucide-react';
 import { SecurityLogEntry, UserProfile, UserPermissions, SystemSetting } from '../../types';
+import { ChangePasswordModal } from '../auth/ChangePasswordModal';
 
 export const SecurityModule: React.FC = () => {
   const { 
@@ -46,6 +47,7 @@ export const SecurityModule: React.FC = () => {
   const [logs, setLogs] = useState<SecurityLogEntry[]>([]);
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState<boolean>(false);
 
   // Security Email Edit State
   const [primaryEmail, setPrimaryEmail] = useState<string>(systemSettings?.primaryAdminEmail || 'jfrbdran@gmail.com');
@@ -283,6 +285,21 @@ export const SecurityModule: React.FC = () => {
                 ISOLATED
               </span>
             </div>
+
+            <div className="p-3 rounded-xl bg-slate-950/70 border border-slate-800/80 flex items-center justify-between">
+              <div>
+                <span className="font-semibold text-slate-200 block">{isRTL ? 'تغيير كلمة المرور' : 'Change Password'}</span>
+                <span className="text-[11px] text-slate-400">{isRTL ? 'تحديث كلمة المرور لحسابك الحالي' : 'Update the current user password'}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsChangePasswordOpen(true)}
+                className="px-3 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white font-semibold text-xs transition-colors cursor-pointer flex items-center gap-1.5"
+              >
+                <Key className="w-3.5 h-3.5" />
+                <span>{isRTL ? 'تغيير كلمة المرور' : 'Change'}</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -494,6 +511,14 @@ export const SecurityModule: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Change Password Modal */}
+      {isChangePasswordOpen && (
+        <ChangePasswordModal
+          isOpen={isChangePasswordOpen}
+          onClose={() => setIsChangePasswordOpen(false)}
+        />
       )}
 
     </div>

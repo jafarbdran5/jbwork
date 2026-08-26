@@ -59,9 +59,17 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({
 
   // Load Dashboard Data
   useEffect(() => {
-    const qCases = query(collection(db, 'cases'), where('isDeleted', '==', false), orderBy('createdAt', 'desc'));
+    const qCases = query(collection(db, 'cases'));
     const unsubCases = onSnapshot(qCases, (snap) => {
-      setCases(snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseItem)));
+      const items = snap.docs
+        .map(d => ({ id: d.id, ...d.data() } as CaseItem))
+        .filter(c => !c.isDeleted)
+        .sort((a, b) => {
+          const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return timeB - timeA;
+        });
+      setCases(items);
       setLoading(false);
     }, (err) => {
       console.warn('Cases load error in dashboard:', err);
@@ -69,9 +77,12 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({
     });
 
     const todayStr = new Date().toISOString().split('T')[0];
-    const qReminders = query(collection(db, 'caseReminders'), where('dueDate', '==', todayStr));
+    const qReminders = query(collection(db, 'caseReminders'));
     const unsubReminders = onSnapshot(qReminders, (snap) => {
-      setReminders(snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseReminder)));
+      const items = snap.docs
+        .map(d => ({ id: d.id, ...d.data() } as CaseReminder))
+        .filter(r => r.dueDate === todayStr);
+      setReminders(items);
     }, (err) => console.warn(err));
 
     const qTasks = query(collection(db, 'caseTasks'), where('status', '==', 'todo'));

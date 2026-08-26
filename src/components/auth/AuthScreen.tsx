@@ -36,8 +36,8 @@ export const AuthScreen: React.FC = () => {
   const [showTeamEmailSection, setShowTeamEmailSection] = useState(false);
 
   // Login form state for team members
-  const [email, setEmail] = useState('jfrbdran@gmail.com');
-  const [password, setPassword] = useState('Jaafar@2026!');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
   // Reset form state
@@ -47,13 +47,6 @@ export const AuthScreen: React.FC = () => {
   // Status & loading
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-
-  // Quick autofill helper
-  const handleQuickFill = (quickEmail: string, quickPass: string) => {
-    setEmail(quickEmail);
-    setPassword(quickPass);
-    setErrorMsg(null);
-  };
 
   // Handle Google Sign-in (Primary Gateway)
   const handleGoogleSignIn = async () => {
@@ -304,7 +297,7 @@ export const AuthScreen: React.FC = () => {
                           required
                           value={email}
                           onChange={(e) => setEmail(e.target.value)}
-                          placeholder="jfrbdran@gmail.com"
+                          placeholder="employee@company.com"
                           dir="ltr"
                           className={`w-full bg-slate-950/80 border border-slate-800 rounded-xl py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-cyan-500 transition-colors ${
                             isRTL ? 'pr-8 pl-3 text-right' : 'pl-8 pr-3'

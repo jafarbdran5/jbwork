@@ -38,12 +38,8 @@ try {
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
-
-// Add Google Workspace requested OAuth scopes
-googleProvider.addScope('https://www.googleapis.com/auth/spreadsheets');
-googleProvider.addScope('https://www.googleapis.com/auth/forms.body');
-googleProvider.addScope('https://www.googleapis.com/auth/forms.responses.readonly');
-googleProvider.addScope('https://www.googleapis.com/auth/drive.file');
+googleProvider.addScope('profile');
+googleProvider.addScope('email');
 
 // In-memory token cache (strictly adhering to security guidelines: NOT stored in localStorage)
 let cachedGoogleAccessToken: string | null = null;

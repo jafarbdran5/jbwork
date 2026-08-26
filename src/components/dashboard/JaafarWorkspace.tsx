@@ -45,14 +45,31 @@ export const JaafarWorkspace: React.FC<JaafarWorkspaceProps> = ({
     if (!userProfile) return;
 
     // Jaafar's assigned cases or urgent cases
-    const qCases = query(collection(db, 'cases'), where('isDeleted', '==', false), orderBy('createdAt', 'desc'), limit(15));
+    const qCases = query(collection(db, 'cases'));
     const unsubCases = onSnapshot(qCases, (snap) => {
-      setMyCases(snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseItem)));
+      const items = snap.docs
+        .map(d => ({ id: d.id, ...d.data() } as CaseItem))
+        .filter(c => !c.isDeleted)
+        .sort((a, b) => {
+          const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return timeB - timeA;
+        })
+        .slice(0, 15);
+      setMyCases(items);
     });
 
-    const qReminders = query(collection(db, 'caseReminders'), orderBy('createdAt', 'desc'), limit(10));
+    const qReminders = query(collection(db, 'caseReminders'));
     const unsubReminders = onSnapshot(qReminders, (snap) => {
-      setReminders(snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseReminder)));
+      const items = snap.docs
+        .map(d => ({ id: d.id, ...d.data() } as CaseReminder))
+        .sort((a, b) => {
+          const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return timeB - timeA;
+        })
+        .slice(0, 10);
+      setReminders(items);
     });
 
     const qTasks = query(collection(db, 'caseTasks'), where('status', '==', 'todo'), limit(10));
@@ -60,9 +77,17 @@ export const JaafarWorkspace: React.FC<JaafarWorkspaceProps> = ({
       setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseTask)));
     });
 
-    const qRequests = query(collection(db, 'requests'), orderBy('createdAt', 'desc'), limit(8));
+    const qRequests = query(collection(db, 'requests'));
     const unsubRequests = onSnapshot(qRequests, (snap) => {
-      setRequests(snap.docs.map(d => ({ id: d.id, ...d.data() } as InternalRequest)));
+      const items = snap.docs
+        .map(d => ({ id: d.id, ...d.data() } as InternalRequest))
+        .sort((a, b) => {
+          const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return timeB - timeA;
+        })
+        .slice(0, 8);
+      setRequests(items);
     });
 
     const unsubTeam = onSnapshot(collection(db, 'users'), (snap) => {

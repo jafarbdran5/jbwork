@@ -397,8 +397,21 @@ export interface GoogleWorkspaceConfig {
   driveRootFolderName?: string;
   driveExternalRequestsFolderId?: string;
   driveCasesFolderId?: string;
+  driveCasesCurrentYearFolderId?: string;
   driveReportsFolderId?: string;
   driveArchiveFolderId?: string;
+
+  // Custom Department Forms (Outside core cases scope)
+  departmentForms?: Array<{
+    id: string;
+    title: string;
+    department: string;
+    formUrl: string;
+    editUrl: string;
+    createdAt: string;
+    fieldsCount?: number;
+    description?: string;
+  }>;
 
   // Snapshot before write
   lastSnapshot?: {

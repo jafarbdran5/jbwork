@@ -7,7 +7,6 @@ import {
   doc, 
   getDoc, 
   setDoc, 
-  updateDoc, 
   serverTimestamp, 
   collection, 
   query, 
@@ -21,6 +20,7 @@ import {
   extractSpreadsheetId,
   createJBWorkExternalSpreadsheet, 
   createJBWorkExternalForm, 
+  createDepartmentGoogleForm,
   setupJBWorkDriveHierarchy, 
   runFullGoogleSync,
   DiscoveredSpreadsheet,
@@ -48,7 +48,12 @@ import {
   Sparkles,
   Link,
   ChevronDown,
-  Plus
+  Plus,
+  Building2,
+  Copy,
+  Trash2,
+  HelpCircle,
+  Send
 } from 'lucide-react';
 
 export const GoogleWorkspaceSettings: React.FC = () => {
@@ -87,10 +92,22 @@ export const GoogleWorkspaceSettings: React.FC = () => {
   });
 
   // Creation Actions State
+  const [isMasterProvisioning, setIsMasterProvisioning] = useState<boolean>(false);
+  const [showProvisioningModal, setShowProvisioningModal] = useState<boolean>(false);
+  const [provisioningLogs, setProvisioningLogs] = useState<string[]>([]);
+  const [provisioningStep, setProvisioningStep] = useState<string>('');
+  const [provisioningSuccess, setProvisioningSuccess] = useState<boolean | null>(null);
   const [isCreatingSpreadsheet, setIsCreatingSpreadsheet] = useState<boolean>(false);
   const [isCreatingForm, setIsCreatingForm] = useState<boolean>(false);
   const [isSettingUpDrive, setIsSettingUpDrive] = useState<boolean>(false);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+
+  // Department Forms State (Outside core cases scope)
+  const [showNewDeptFormModal, setShowNewDeptFormModal] = useState<boolean>(false);
+  const [isCreatingDeptForm, setIsCreatingDeptForm] = useState<boolean>(false);
+  const [deptFormTitle, setDeptFormTitle] = useState<string>('');
+  const [deptFormDepartment, setDeptFormDepartment] = useState<string>('قسم المالية والمطالبات');
+  const [deptFormDescription, setDeptFormDescription] = useState<string>('');
 
   // Sync Logs History
   const [syncLogs, setSyncLogs] = useState<SyncLogEntry[]>([]);
@@ -106,13 +123,31 @@ export const GoogleWorkspaceSettings: React.FC = () => {
   const [showManualTokenModal, setShowManualTokenModal] = useState<boolean>(false);
   const [manualTokenInput, setManualTokenInput] = useState<string>('');
 
-  // Load configuration from Firestore
+  // Load configuration from Firestore and LocalStorage mirror
   useEffect(() => {
+    // 1. Instant load from local storage if present
+    try {
+      const cached = localStorage.getItem('jb_google_workspace_config');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        setConfig((prev) => prev || parsed);
+        if (parsed.websiteSpreadsheetId) {
+          setWebsiteSheetInput(parsed.websiteSpreadsheetUrl || parsed.websiteSpreadsheetId);
+        }
+        if (parsed.websiteFieldMapping) {
+          setFieldMapping(parsed.websiteFieldMapping);
+        }
+      }
+    } catch (_) {}
+
     const docRef = doc(db, 'googleIntegrations', 'config');
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data() as GoogleWorkspaceConfig;
         setConfig(data);
+        try {
+          localStorage.setItem('jb_google_workspace_config', JSON.stringify(data));
+        } catch (_) {}
         if (data.websiteSpreadsheetId) {
           setWebsiteSheetInput(data.websiteSpreadsheetUrl || data.websiteSpreadsheetId);
         }
@@ -284,6 +319,139 @@ export const GoogleWorkspaceSettings: React.FC = () => {
     }
   };
 
+  // 1-Click Master Provisioning & Permanent Persistence
+  const handleMasterProvisioning = async () => {
+    setShowProvisioningModal(true);
+    setProvisioningLogs(['بدء عملية التهيئة الشاملة لمنظومة Google Workspace...']);
+    setProvisioningStep('1. جاري التحقق من تفويض حساب Google (OAuth 2.0)...');
+    setProvisioningSuccess(null);
+    setIsMasterProvisioning(true);
+
+    let token = googleAccessToken;
+    if (!token) {
+      try {
+        token = await authorizeGoogleWorkspace();
+      } catch (authErr: any) {
+        setProvisioningLogs((prev) => [...prev, `❌ خطأ في تفويض Google: ${authErr.message || authErr}`]);
+        setProvisioningSuccess(false);
+        setIsMasterProvisioning(false);
+        return;
+      }
+    }
+
+    if (!token) {
+      setProvisioningLogs((prev) => [...prev, '❌ لم يتم الحصول على رمز التفويض من Google.']);
+      setProvisioningSuccess(false);
+      setIsMasterProvisioning(false);
+      return;
+    }
+
+    setProvisioningLogs((prev) => [...prev, '✓ تم التحقق من تفويض حساب Google بنجاح.']);
+
+    try {
+      const updates: Partial<GoogleWorkspaceConfig> = {
+        updatedAt: serverTimestamp(),
+        updatedBy: {
+          uid: userProfile?.uid || '',
+          name: userProfile?.displayName || 'المشرف العام'
+        }
+      };
+
+      // 1. Setup Drive Hierarchy
+      setProvisioningStep('2. جاري فحص وإنشاء هيكلية مجلدات Google Drive الرسمية (JB Work)...');
+      try {
+        const driveRes = await setupJBWorkDriveHierarchy(token);
+        updates.driveRootFolderId = driveRes.rootFolderId;
+        updates.driveRootFolderName = driveRes.rootFolderName;
+        updates.driveExternalRequestsFolderId = driveRes.externalRequestsFolderId;
+        updates.driveCasesFolderId = driveRes.casesFolderId;
+        updates.driveCasesCurrentYearFolderId = driveRes.casesCurrentYearFolderId;
+        updates.driveReportsFolderId = driveRes.reportsFolderId;
+        updates.driveArchiveFolderId = driveRes.archiveFolderId;
+        setProvisioningLogs((prev) => [
+          ...prev, 
+          `✓ تم تجهيز مجلد Drive الرئيسي (${driveRes.rootFolderName}) والمجلدات الفرعية (Cases, Reports, Archive).`
+        ]);
+      } catch (dErr: any) {
+        console.warn('Drive hierarchy setup notice:', dErr);
+        setProvisioningLogs((prev) => [...prev, `⚠️ تنبيه Drive: ${dErr.message || dErr}`]);
+      }
+
+      // 2. Setup Dedicated Spreadsheet if not present
+      setProvisioningStep('3. جاري فحص وإنشاء ملف Google Sheets المركزي للعمليات...');
+      if (!config?.externalSpreadsheetId) {
+        try {
+          const sheetRes = await createJBWorkExternalSpreadsheet(token);
+          updates.externalSpreadsheetId = sheetRes.spreadsheetId;
+          updates.externalSpreadsheetUrl = sheetRes.spreadsheetUrl;
+          updates.externalSpreadsheetName = 'JB Work — External Requests';
+          updates.externalSheetsList = ['Form Responses', 'Requests', 'Sync Log', 'Configuration'];
+          setProvisioningLogs((prev) => [
+            ...prev, 
+            `✓ تم إنشاء ملف Google Sheets المخصص بـ 4 أوراق عمل (${sheetRes.spreadsheetId}).`
+          ]);
+        } catch (sErr: any) {
+          console.warn('Spreadsheet creation notice:', sErr);
+          setProvisioningLogs((prev) => [...prev, `⚠️ تنبيه Google Sheets: ${sErr.message || sErr}`]);
+        }
+      } else {
+        setProvisioningLogs((prev) => [...prev, `✓ ملف Google Sheets المركزي محفوظ ومسجل مسبقاً (${config.externalSpreadsheetId}).`]);
+      }
+
+      // 3. Setup Dedicated Case Form if not present
+      setProvisioningStep('4. جاري فحص وإنشاء نموذج Google Forms الرسمي للقضايا...');
+      if (!config?.externalFormId) {
+        try {
+          const formRes = await createJBWorkExternalForm(token);
+          updates.externalFormId = formRes.formId;
+          updates.externalFormTitle = 'JB Work — External Requests';
+          updates.externalFormUrl = formRes.formUrl;
+          updates.externalFormEditUrl = formRes.editUrl;
+          setProvisioningLogs((prev) => [
+            ...prev, 
+            `✓ تم إنشاء استمارة القضايا الرسمية (${formRes.formId}) وربطها بنجاح.`
+          ]);
+        } catch (fErr: any) {
+          console.warn('Form creation notice:', fErr);
+          setProvisioningLogs((prev) => [...prev, `⚠️ تنبيه Google Forms: ${fErr.message || fErr}`]);
+        }
+      } else {
+        setProvisioningLogs((prev) => [...prev, `✓ استمارة القضايا الأساسية محفوظة ومسجلة مسبقاً (${config.externalFormId}).`]);
+      }
+
+      // Save to Firestore
+      setProvisioningStep('5. جاري حفظ وتثبيت كافة الروابط والمعرفات في قاعدة البيانات...');
+      await setDoc(doc(db, 'googleIntegrations', 'config'), cleanFirestoreData(updates), { merge: true });
+
+      // Save to LocalStorage durable cache
+      try {
+        const currentSaved = localStorage.getItem('jb_google_workspace_config');
+        const parsed = currentSaved ? JSON.parse(currentSaved) : {};
+        localStorage.setItem('jb_google_workspace_config', JSON.stringify({ ...parsed, ...updates }));
+      } catch (_) {}
+
+      setProvisioningLogs((prev) => [...prev, '✓ تم حفظ المعرفات بنجاح في قاعدة البيانات والذاكرة الدائمة.']);
+      setProvisioningStep('🎉 اكتملت التهيئة الشاملة والحفظ الدائم بنجاح 100%!');
+      setProvisioningSuccess(true);
+
+      await logAuditAndEvent({
+        action: 'MASTER_PROVISIONING_COMPLETED',
+        details: 'التهيئة الشاملة لـ Google Workspace (مجلدات Drive + شيت العمليات + نموذج القضايا)',
+        entityType: 'settings',
+        user: userProfile
+      });
+
+      showToast('success', '✓ تم إنجاز التهيئة الشاملة وحفظ كافة مجلدات Drive وملف الشيت ونموذج القضايا بنجاح دائم!');
+    } catch (err: any) {
+      console.error('Master provisioning error:', err);
+      setProvisioningLogs((prev) => [...prev, `❌ خطأ غير متوقع: ${err.message || err}`]);
+      setProvisioningSuccess(false);
+      showToast('error', `فشل في إتمام التهيئة: ${err.message || err}`);
+    } finally {
+      setIsMasterProvisioning(false);
+    }
+  };
+
   // Create Dedicated JB Work Spreadsheet
   const handleCreateExternalSpreadsheet = async () => {
     let token = googleAccessToken;
@@ -297,20 +465,15 @@ export const GoogleWorkspaceSettings: React.FC = () => {
     try {
       const res = await createJBWorkExternalSpreadsheet(token);
 
-      await updateDoc(doc(db, 'googleIntegrations', 'config'), {
+      const updates = {
         externalSpreadsheetId: res.spreadsheetId,
         externalSpreadsheetUrl: res.spreadsheetUrl,
         externalSpreadsheetName: 'JB Work — External Requests',
         externalSheetsList: ['Form Responses', 'Requests', 'Sync Log', 'Configuration'],
         updatedAt: serverTimestamp()
-      });
+      };
 
-      await logAuditAndEvent({
-        action: 'CREATE_JB_WORK_SPREADSHEET',
-        details: `إنشاء ملف Google Spreadsheet مخصص للطلبات الخارجية: ${res.spreadsheetId}`,
-        entityType: 'settings',
-        user: userProfile
-      });
+      await setDoc(doc(db, 'googleIntegrations', 'config'), cleanFirestoreData(updates), { merge: true });
 
       showToast('success', '✓ تم إنشاء وربط ملف Google Sheet المخصص (4 أوراق عمل) بنجاح!');
     } catch (err: any) {
@@ -334,20 +497,15 @@ export const GoogleWorkspaceSettings: React.FC = () => {
     try {
       const res = await createJBWorkExternalForm(token);
 
-      await updateDoc(doc(db, 'googleIntegrations', 'config'), {
+      const updates = {
         externalFormId: res.formId,
         externalFormTitle: 'JB Work — External Requests',
         externalFormUrl: res.formUrl,
         externalFormEditUrl: res.editUrl,
         updatedAt: serverTimestamp()
-      });
+      };
 
-      await logAuditAndEvent({
-        action: 'CREATE_JB_WORK_FORM',
-        details: `إنشاء استمارة Google Form مخصصة للطلبات الخارجية: ${res.formId}`,
-        entityType: 'settings',
-        user: userProfile
-      });
+      await setDoc(doc(db, 'googleIntegrations', 'config'), cleanFirestoreData(updates), { merge: true });
 
       showToast('success', '✓ تم إنشاء استمارة Google Form المخصصة مع كافة الحقول والتصنيفات بنجاح!');
     } catch (err: any) {
@@ -371,22 +529,18 @@ export const GoogleWorkspaceSettings: React.FC = () => {
     try {
       const res = await setupJBWorkDriveHierarchy(token);
 
-      await updateDoc(doc(db, 'googleIntegrations', 'config'), {
+      const updates = {
         driveRootFolderId: res.rootFolderId,
         driveRootFolderName: res.rootFolderName,
         driveExternalRequestsFolderId: res.externalRequestsFolderId,
         driveCasesFolderId: res.casesFolderId,
+        driveCasesCurrentYearFolderId: res.casesCurrentYearFolderId,
         driveReportsFolderId: res.reportsFolderId,
         driveArchiveFolderId: res.archiveFolderId,
         updatedAt: serverTimestamp()
-      });
+      };
 
-      await logAuditAndEvent({
-        action: 'SETUP_DRIVE_HIERARCHY',
-        details: `تهيئة هيكلية مجلدات Google Drive (JB Work / Cases / External Requests)`,
-        entityType: 'settings',
-        user: userProfile
-      });
+      await setDoc(doc(db, 'googleIntegrations', 'config'), cleanFirestoreData(updates), { merge: true });
 
       showToast('success', '✓ تم إنشاء وتهيئة مجلدات Google Drive الرسمية بنجاح!');
     } catch (err: any) {
@@ -394,6 +548,94 @@ export const GoogleWorkspaceSettings: React.FC = () => {
       showToast('error', `فشل تهيئة Google Drive: ${err.message || err}`);
     } finally {
       setIsSettingUpDrive(false);
+    }
+  };
+
+  // Create Department Form Handler (Outside core cases)
+  const handleCreateDepartmentForm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!deptFormTitle.trim() || !deptFormDepartment.trim()) {
+      showToast('error', 'يرجى إدخال عنوان الاستمارة والقسم التابع لها.');
+      return;
+    }
+
+    let token = googleAccessToken;
+    if (!token) token = await authorizeGoogleWorkspace();
+    if (!token) {
+      showToast('error', 'يرجى تفويض حساب Google أولاً.');
+      return;
+    }
+
+    setIsCreatingDeptForm(true);
+    try {
+      const res = await createDepartmentGoogleForm(token, {
+        title: deptFormTitle.trim(),
+        department: deptFormDepartment.trim(),
+        description: deptFormDescription.trim() || undefined
+      });
+
+      const newDeptFormItem = {
+        id: res.formId,
+        title: res.title,
+        department: res.department,
+        formUrl: res.formUrl,
+        editUrl: res.editUrl,
+        createdAt: new Date().toISOString(),
+        description: deptFormDescription.trim(),
+        fieldsCount: 6
+      };
+
+      const existingDeptForms = config?.departmentForms || [];
+      const updatedDeptForms = [...existingDeptForms, newDeptFormItem];
+
+      await setDoc(doc(db, 'googleIntegrations', 'config'), {
+        departmentForms: updatedDeptForms,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+
+      try {
+        const currentSaved = localStorage.getItem('jb_google_workspace_config');
+        const parsed = currentSaved ? JSON.parse(currentSaved) : {};
+        localStorage.setItem('jb_google_workspace_config', JSON.stringify({
+          ...parsed,
+          departmentForms: updatedDeptForms
+        }));
+      } catch (_) {}
+
+      await logAuditAndEvent({
+        action: 'CREATE_DEPARTMENT_FORM',
+        details: `إنشاء استمارة Google Form مخصصة لقسم ${res.department}: (${res.title})`,
+        entityType: 'settings',
+        user: userProfile
+      });
+
+      showToast('success', `✓ تم إنشاء استمارة (${res.title}) وإضافتها بنجاح!`);
+      setShowNewDeptFormModal(false);
+      setDeptFormTitle('');
+      setDeptFormDescription('');
+    } catch (err: any) {
+      console.error('Error creating department form:', err);
+      showToast('error', `فشل إنشاء استمارة القسم: ${err.message || err}`);
+    } finally {
+      setIsCreatingDeptForm(false);
+    }
+  };
+
+  // Delete Department Form
+  const handleDeleteDepartmentForm = async (formId: string) => {
+    if (!window.confirm('هل أنت متأكد من حذف هذه الاستمارة من قائمة استمارات الأقسام؟')) return;
+    try {
+      const existingDeptForms = config?.departmentForms || [];
+      const updatedDeptForms = existingDeptForms.filter(f => f.id !== formId);
+
+      await setDoc(doc(db, 'googleIntegrations', 'config'), {
+        departmentForms: updatedDeptForms,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+
+      showToast('success', 'تمت إزالة الاستمارة من القائمة.');
+    } catch (e: any) {
+      showToast('error', `فشل الحذف: ${e.message}`);
     }
   };
 
@@ -514,12 +756,12 @@ export const GoogleWorkspaceSettings: React.FC = () => {
     autoSync: boolean
   ) => {
     try {
-      await updateDoc(doc(db, 'googleIntegrations', 'config'), {
+      await setDoc(doc(db, 'googleIntegrations', 'config'), {
         syncMode: mode,
         syncFrequencyMinutes: frequency,
         autoSyncEnabled: autoSync,
         updatedAt: serverTimestamp()
-      });
+      }, { merge: true });
       showToast('success', '✓ تم تحديث خيارات المزامنة');
     } catch (e: any) {
       showToast('error', `فشل التحديث: ${e.message}`);
@@ -568,7 +810,13 @@ export const GoogleWorkspaceSettings: React.FC = () => {
         updates.driveRootFolderId = manualDriveFolderId.trim();
       }
 
-      await updateDoc(doc(db, 'googleIntegrations', 'config'), cleanFirestoreData(updates));
+      await setDoc(doc(db, 'googleIntegrations', 'config'), cleanFirestoreData(updates), { merge: true });
+      try {
+        const currentSaved = localStorage.getItem('jb_google_workspace_config');
+        const parsed = currentSaved ? JSON.parse(currentSaved) : {};
+        localStorage.setItem('jb_google_workspace_config', JSON.stringify({ ...parsed, ...updates }));
+      } catch (_) {}
+
       showToast('success', '✓ تم حفظ المعرفات والروابط بنجاح دون الحاجة لإعادة إنشاء أي شيء!');
       setIsEditingManualIds(false);
     } catch (err: any) {
@@ -616,15 +864,24 @@ export const GoogleWorkspaceSettings: React.FC = () => {
               </h1>
             </div>
             <p className="text-xs text-zinc-400 leading-relaxed max-w-2xl">
-              تكامل حقيقي وفوري مع Google Workspace (Sheets, Forms, Drive) دون المساس ببيانات موقعك الحالية، مع قراءة ومزامنة ذكية وتحويل فوري للقضايا.
+              تكامل حقيقي وفوري مع Google Workspace (Sheets, Forms, Drive) وحفظ دائم لكافة المعرفات وهيكلية المجلدات دون الحاجة لإعادة التهيئة عند كل مهمة.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             <button
+              onClick={handleMasterProvisioning}
+              disabled={isMasterProvisioning}
+              className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-emerald-600 hover:from-indigo-500 hover:to-emerald-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer transition-all shadow-md disabled:opacity-50"
+            >
+              {isMasterProvisioning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+              <span>التهيئة الشاملة والحفظ الدائم بضغطة واحدة</span>
+            </button>
+
+            <button
               onClick={handleTestRead}
               disabled={isTestingRead}
-              className="px-3.5 py-2 bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-700/50 rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer transition-all disabled:opacity-50"
+              className="px-3 py-2 bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 border border-emerald-700/50 rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer transition-all disabled:opacity-50"
             >
               {isTestingRead ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
               <span>اختبار القراءة (Test Read)</span>
@@ -634,10 +891,10 @@ export const GoogleWorkspaceSettings: React.FC = () => {
             <button
               onClick={handleTestWrite}
               disabled={isTestingWrite}
-              className="px-3.5 py-2 bg-indigo-950/60 hover:bg-indigo-900/60 text-indigo-300 border border-indigo-700/50 rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer transition-all disabled:opacity-50"
+              className="px-3 py-2 bg-indigo-950/60 hover:bg-indigo-900/60 text-indigo-300 border border-indigo-700/50 rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer transition-all disabled:opacity-50"
             >
               {isTestingWrite ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <ShieldAlert className="w-3.5 h-3.5" />}
-              <span>اختبار الكتابة الآمنة (Test Write)</span>
+              <span>اختبار الكتابة (Test Write)</span>
               {writeTestStatus === true && <Check className="w-3.5 h-3.5 text-indigo-400" />}
             </button>
           </div>
@@ -1345,6 +1602,226 @@ export const GoogleWorkspaceSettings: React.FC = () => {
         )}
       </div>
 
+      {/* SECTION 5.5: Department Forms Hub (Outside core cases workflow) */}
+      <div className="bg-[#121214] border border-indigo-500/20 rounded-xl p-6 space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-emerald-600/20 text-emerald-400 flex items-center justify-center font-bold">
+                <Building2 className="w-4 h-4" />
+              </div>
+              <h2 className="text-base font-bold text-white">استمارات ونماذج الأقسام الأخرى (خارج نطاق القضايا)</h2>
+            </div>
+            <p className="text-xs text-zinc-400">
+              إنشاء وإدارة نماذج Google Forms مخصصة لأقسام المنظومة المختلفة (مثل المالية، الاستشارات، الموارد البشرية، الدعم الفني) وحفظها دائماً بروابط مباشرة.
+            </p>
+          </div>
+
+          <button
+            onClick={() => setShowNewDeptFormModal(true)}
+            className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-lg text-xs font-bold flex items-center gap-2 cursor-pointer transition-all shadow-md shrink-0"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>إنشاء استمارة قسم جديدة</span>
+          </button>
+        </div>
+
+        {/* Existing Department Forms List */}
+        {(!config?.departmentForms || config.departmentForms.length === 0) ? (
+          <div className="p-8 text-center bg-[#18181B]/60 border border-[#27272A] rounded-xl space-y-3">
+            <Building2 className="w-8 h-8 text-zinc-600 mx-auto" />
+            <div className="space-y-1">
+              <h4 className="text-xs font-bold text-zinc-300">لا توجد استمارات أقسام إضافية منشأة حالياً</h4>
+              <p className="text-[11px] text-zinc-500 max-w-md mx-auto">
+                يمكنك إنشاء نماذج مخصصة لأي قسم (مثل: قسم المحاسبة والمطالبات، قسم الدعم والاستفسارات العامة، قسم التوظيف) وسيتم توليد نموذج Google Form رسمي وحفظه هنا بصورة دائمة.
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                setDeptFormDepartment('قسم المالية والمطالبات');
+                setDeptFormTitle('استمارة مطالبات وفواتير قسم المالية');
+                setShowNewDeptFormModal(true);
+              }}
+              className="px-3.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-emerald-400 text-xs font-medium rounded-lg inline-flex items-center gap-1.5 transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>إنشاء نموذج لقسم المالية الآن</span>
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {config.departmentForms.map((item) => (
+              <div 
+                key={item.id} 
+                className="p-4 bg-[#18181B] border border-[#27272A] hover:border-zinc-700 rounded-xl space-y-3 transition-all"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="space-y-1">
+                    <span className="inline-block px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold rounded">
+                      {item.department}
+                    </span>
+                    <h3 className="text-xs font-bold text-white">{item.title}</h3>
+                  </div>
+                  <button
+                    onClick={() => handleDeleteDepartmentForm(item.id)}
+                    title="حذف من القائمة"
+                    className="p-1 text-zinc-500 hover:text-rose-400 hover:bg-rose-950/30 rounded transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {item.description && (
+                  <p className="text-[11px] text-zinc-400 line-clamp-2">{item.description}</p>
+                )}
+
+                <div className="pt-2 border-t border-zinc-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={item.formUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-2.5 py-1.5 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 rounded-md text-[11px] font-bold inline-flex items-center gap-1"
+                    >
+                      <span>رابط العميل</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+
+                    <a
+                      href={item.editUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-md text-[11px] font-medium inline-flex items-center gap-1"
+                    >
+                      <span>تعديل</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(item.formUrl);
+                      showToast('success', `✓ تم نسخ رابط استمارة (${item.title}) إلى الحافظة.`);
+                    }}
+                    className="px-2 py-1.5 text-zinc-400 hover:text-white text-[11px] inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    <Copy className="w-3 h-3" />
+                    <span>نسخ الرابط</span>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* MODAL: Create New Department Form */}
+      {showNewDeptFormModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-[#18181B] border border-[#27272A] rounded-2xl w-full max-w-lg p-6 space-y-5 shadow-2xl animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between border-b border-[#27272A] pb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-emerald-600/20 text-emerald-400 flex items-center justify-center font-bold">
+                  <Building2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">إنشاء استمارة Google Form لقسم مخصص</h3>
+                  <p className="text-[11px] text-zinc-400">سيتم إنشاء استمارة متكاملة في Google Forms وحفظها في المنظومة</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowNewDeptFormModal(false)}
+                className="text-zinc-400 hover:text-white text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateDepartmentForm} className="space-y-4">
+              <div className="space-y-1.5 text-xs">
+                <label className="text-zinc-300 font-medium">القسم المستهدف:</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    'قسم المالية والمطالبات',
+                    'قسم الدعم الفني والتقني',
+                    'قسم الاستشارات الخاصة',
+                    'قسم الموارد البشرية (HR)',
+                    'قسم الشكاوى والمقترحات',
+                    'قسم التسويق والعلاقات'
+                  ].map((dept) => (
+                    <button
+                      type="button"
+                      key={dept}
+                      onClick={() => setDeptFormDepartment(dept)}
+                      className={`p-2 text-right rounded-lg border text-xs transition-all ${
+                        deptFormDepartment === dept
+                          ? 'bg-emerald-950/40 border-emerald-600 text-emerald-300 font-bold'
+                          : 'bg-[#121214] border-[#27272A] text-zinc-400 hover:border-zinc-600'
+                      }`}
+                    >
+                      {dept}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  type="text"
+                  placeholder="أو اكتب اسم قسم مخصص..."
+                  value={deptFormDepartment}
+                  onChange={(e) => setDeptFormDepartment(e.target.value)}
+                  className="w-full mt-2 bg-[#121214] border border-[#27272A] rounded-lg px-3 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="space-y-1.5 text-xs">
+                <label className="text-zinc-300 font-medium">عنوان الاستمارة (Form Title):</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="مثال: استمارة تسجيل المطالبات المالية والمستحقات"
+                  value={deptFormTitle}
+                  onChange={(e) => setDeptFormTitle(e.target.value)}
+                  className="w-full bg-[#121214] border border-[#27272A] rounded-lg px-3 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="space-y-1.5 text-xs">
+                <label className="text-zinc-300 font-medium">وصف الاستمارة للعملاء (اختياري):</label>
+                <textarea
+                  rows={3}
+                  placeholder="توجيهات أو إرشادات تظهر في أعلى الاستمارة للعملاء..."
+                  value={deptFormDescription}
+                  onChange={(e) => setDeptFormDescription(e.target.value)}
+                  className="w-full bg-[#121214] border border-[#27272A] rounded-lg px-3 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500 resize-none"
+                />
+              </div>
+
+              <div className="p-3 bg-[#121214] border border-[#27272A] rounded-lg text-[11px] text-zinc-400 space-y-1">
+                <div className="text-emerald-400 font-bold">الحقول التلقائية التي سيتم تضمينها في النموذج:</div>
+                <div>• الاسم الكامل • الهاتف / الواتساب • البريد الإلكتروني • نوع الطلب • تفاصيل الطلب • الملاحظات أو الملفات المرفقة</div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#27272A]">
+                <button
+                  type="button"
+                  onClick={() => setShowNewDeptFormModal(false)}
+                  className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs font-medium cursor-pointer"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  disabled={isCreatingDeptForm || !deptFormTitle.trim()}
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center gap-2 cursor-pointer transition-all disabled:opacity-50"
+                >
+                  {isCreatingDeptForm ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                  <span>{isCreatingDeptForm ? 'جارٍ الإنشاء في Google Forms...' : 'إنشاء وحفظ الاستمارة الآن'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* SECTION 6: Sync Preferences & Auto-Sync Engine */}
       <div className="bg-[#121214] border border-[#27272A] rounded-xl p-6 space-y-4">
         <div className="flex items-center justify-between">
@@ -1515,6 +1992,103 @@ export const GoogleWorkspaceSettings: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* MODAL: Master Provisioning Live Diagnostics */}
+      {showProvisioningModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-[#18181B] border border-[#27272A] rounded-2xl w-full max-w-xl p-6 space-y-5 shadow-2xl animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between border-b border-[#27272A] pb-3">
+              <div className="flex items-center gap-2">
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold ${
+                  provisioningSuccess === true 
+                    ? 'bg-emerald-600/20 text-emerald-400' 
+                    : provisioningSuccess === false 
+                      ? 'bg-rose-600/20 text-rose-400' 
+                      : 'bg-indigo-600/20 text-indigo-400'
+                }`}>
+                  {isMasterProvisioning ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : provisioningSuccess === true ? (
+                    <Check className="w-4 h-4 text-emerald-400" />
+                  ) : (
+                    <Sparkles className="w-4 h-4" />
+                  )}
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">التهيئة الشاملة لمنظومة Google Workspace</h3>
+                  <p className="text-[11px] text-zinc-400">إنشاء وتجهيز وحفظ كافة المجلدات والنماذج الأساسية دفعة واحدة</p>
+                </div>
+              </div>
+              {!isMasterProvisioning && (
+                <button
+                  onClick={() => setShowProvisioningModal(false)}
+                  className="text-zinc-400 hover:text-white text-sm"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            {/* Current Step Status */}
+            <div className={`p-4 rounded-xl border text-xs font-semibold flex items-center gap-3 ${
+              provisioningSuccess === true
+                ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
+                : provisioningSuccess === false
+                  ? 'bg-rose-950/40 border-rose-500/30 text-rose-300'
+                  : 'bg-indigo-950/40 border-indigo-500/30 text-indigo-300'
+            }`}>
+              {isMasterProvisioning && <RefreshCw className="w-4 h-4 animate-spin shrink-0" />}
+              {provisioningSuccess === true && <Check className="w-4 h-4 text-emerald-400 shrink-0" />}
+              {provisioningSuccess === false && <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />}
+              <span>{provisioningStep || 'جارٍ الإعداد...'}</span>
+            </div>
+
+            {/* Live Logs Terminal */}
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-bold text-zinc-400 flex items-center justify-between">
+                <span>سجل الخطوات المباشر:</span>
+                <span className="font-mono text-zinc-500">{provisioningLogs.length} خطوات</span>
+              </div>
+              <div className="bg-[#121214] border border-[#27272A] rounded-xl p-3.5 max-h-52 overflow-y-auto font-mono text-[11px] space-y-1.5 text-zinc-300">
+                {provisioningLogs.map((log, idx) => (
+                  <div key={idx} className="flex items-start gap-2 leading-relaxed">
+                    <span className="text-zinc-600 select-none">›</span>
+                    <span className={
+                      log.includes('✓') ? 'text-emerald-400' :
+                      log.includes('❌') ? 'text-rose-400 font-bold' :
+                      log.includes('⚠️') ? 'text-amber-400' : 'text-zinc-300'
+                    }>
+                      {log}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Explanatory Footer */}
+            <div className="p-3 bg-zinc-900/60 border border-zinc-800 rounded-lg text-[11px] text-zinc-400 space-y-1">
+              <p className="text-zinc-300 font-bold">ملاحظة تنظيمية:</p>
+              <p>
+                تم حفظ وتثبيت هيكلية Drive الأساسية وملف الشيت المركزي ونموذج القضايا لتبقى ثابتة دائماً.
+                إذا أردت إنشاء استمارات لأقسام إضافية (مثل المالية، الاستشارات، الموارد البشرية)، يمكنك إنشاؤها في أي وقت من قسم &quot;استمارات ونماذج الأقسام الأخرى&quot; بالأسفل.
+              </p>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#27272A]">
+              {!isMasterProvisioning && (
+                <button
+                  type="button"
+                  onClick={() => setShowProvisioningModal(false)}
+                  className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition-all cursor-pointer"
+                >
+                  إغلاق ومتابعة
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

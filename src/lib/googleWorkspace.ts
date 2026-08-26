@@ -632,6 +632,152 @@ export async function createJBWorkExternalForm(
   return { formId, formUrl, editUrl };
 }
 
+// Create Custom Google Form for Other Departments / Functions
+export async function createDepartmentGoogleForm(
+  token: string,
+  params: {
+    title: string;
+    department: string;
+    description?: string;
+    questions?: Array<{
+      title: string;
+      description?: string;
+      required?: boolean;
+      type: 'SHORT_TEXT' | 'PARAGRAPH' | 'DROP_DOWN' | 'MULTIPLE_CHOICE' | 'CHECKBOX';
+      options?: string[];
+    }>;
+  }
+): Promise<{ formId: string; formUrl: string; editUrl: string; title: string; department: string }> {
+  const createUrl = 'https://forms.googleapis.com/v1/forms';
+  const newForm = await fetchGoogleApi<{
+    formId: string;
+    responderUri: string;
+  }>(createUrl, token, {
+    method: 'POST',
+    body: JSON.stringify({
+      info: {
+        title: params.title || `استمارة ${params.department}`
+      }
+    })
+  });
+
+  const formId = newForm.formId;
+  const formUrl = newForm.responderUri;
+  const editUrl = `https://docs.google.com/forms/d/${formId}/edit`;
+
+  const defaultQuestions = [
+    {
+      title: 'الاسم الكامل / الجهة',
+      description: 'يرجى كتابة الاسم الثلاثي أو اسم الشركة',
+      required: true,
+      type: 'SHORT_TEXT' as const
+    },
+    {
+      title: 'رقم الهاتف / الواتساب',
+      description: 'رقم التواصل المباشر مع مفتاح الدولة',
+      required: true,
+      type: 'SHORT_TEXT' as const
+    },
+    {
+      title: 'البريد الإلكتروني',
+      description: 'للمتابعة والإشعارات الرسمية',
+      required: false,
+      type: 'SHORT_TEXT' as const
+    },
+    {
+      title: 'موضوع الطلب / الغرض من الاستمارة',
+      description: `طلب خاص بقسم: ${params.department}`,
+      required: true,
+      type: 'SHORT_TEXT' as const
+    },
+    {
+      title: 'التفاصيل والشرح',
+      description: 'يرجى كتابة كافة التفاصيل والملاحظات المتعلقة بالطلب',
+      required: true,
+      type: 'PARAGRAPH' as const
+    },
+    {
+      title: 'روابط الملفات أو المرفقات (Google Drive)',
+      description: 'أرفق روابط أي ملفات أو صور داعمة',
+      required: false,
+      type: 'PARAGRAPH' as const
+    }
+  ];
+
+  const questionsList = params.questions && params.questions.length > 0
+    ? params.questions
+    : defaultQuestions;
+
+  const requests: any[] = [
+    {
+      updateFormInfo: {
+        info: {
+          description: params.description || `استمارة رسمية مخصصة لقسم ${params.department} — نظام JB Work.`
+        },
+        updateMask: 'description'
+      }
+    }
+  ];
+
+  questionsList.forEach((q, idx) => {
+    let questionItemObj: any = {
+      required: !!q.required
+    };
+
+    if (q.type === 'PARAGRAPH') {
+      questionItemObj.textQuestion = { paragraph: true };
+    } else if (q.type === 'DROP_DOWN' && q.options && q.options.length > 0) {
+      questionItemObj.choiceQuestion = {
+        type: 'DROP_DOWN',
+        options: q.options.map(opt => ({ value: opt }))
+      };
+    } else if (q.type === 'MULTIPLE_CHOICE' && q.options && q.options.length > 0) {
+      questionItemObj.choiceQuestion = {
+        type: 'RADIO',
+        options: q.options.map(opt => ({ value: opt }))
+      };
+    } else if (q.type === 'CHECKBOX' && q.options && q.options.length > 0) {
+      questionItemObj.choiceQuestion = {
+        type: 'CHECKBOX',
+        options: q.options.map(opt => ({ value: opt }))
+      };
+    } else {
+      questionItemObj.textQuestion = { paragraph: false };
+    }
+
+    requests.push({
+      createItem: {
+        item: {
+          title: q.title,
+          description: q.description || '',
+          questionItem: {
+            question: questionItemObj
+          }
+        },
+        location: { index: idx }
+      }
+    });
+  });
+
+  const batchUrl = `https://forms.googleapis.com/v1/forms/${formId}:batchUpdate`;
+  try {
+    await fetchGoogleApi(batchUrl, token, {
+      method: 'POST',
+      body: JSON.stringify({ requests })
+    });
+  } catch (err) {
+    console.warn('Batch department form question creation warning:', err);
+  }
+
+  return {
+    formId,
+    formUrl,
+    editUrl,
+    title: params.title,
+    department: params.department
+  };
+}
+
 // Fetch Form Responses and Schema from Google Forms API
 export async function fetchGoogleFormResponses(
   formId: string,
@@ -736,15 +882,16 @@ export async function getOrCreateDriveFolder(
   let q = `mimeType='application/vnd.google-apps.folder' and name='${folderName}' and trashed=false`;
   if (parentId) {
     q += ` and '${parentId}' in parents`;
-  } else {
-    q += ` and 'root' in parents`;
   }
 
-  const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,webViewLink)`;
-  const searchRes = await fetchGoogleApi<{ files?: DriveFileItem[] }>(searchUrl, token);
-
-  if (searchRes.files && searchRes.files.length > 0) {
-    return searchRes.files[0];
+  const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,mimeType,webViewLink)&pageSize=1`;
+  try {
+    const searchRes = await fetchGoogleApi<{ files?: DriveFileItem[] }>(searchUrl, token);
+    if (searchRes.files && searchRes.files.length > 0) {
+      return searchRes.files[0];
+    }
+  } catch (searchErr) {
+    console.warn(`Drive search for folder ${folderName} notice:`, searchErr);
   }
 
   // Create folder
@@ -763,7 +910,7 @@ export async function getOrCreateDriveFolder(
   });
 }
 
-// Setup standard JB Work Drive hierarchy
+// Setup standard JB Work Drive hierarchy with fast parallel resolution
 export async function setupJBWorkDriveHierarchy(token: string): Promise<{
   rootFolderId: string;
   rootFolderName: string;
@@ -778,20 +925,16 @@ export async function setupJBWorkDriveHierarchy(token: string): Promise<{
   // 1. Root: JB Work
   const root = await getOrCreateDriveFolder('JB Work', undefined, token);
   
-  // 2. External Requests
-  const extReq = await getOrCreateDriveFolder('External Requests', root.id, token);
-  
-  // 3. Cases
-  const cases = await getOrCreateDriveFolder('Cases', root.id, token);
-  
-  // 4. Cases / 2026
+  // 2. Parallel create child folders inside JB Work
+  const [extReq, cases, reports, archive] = await Promise.all([
+    getOrCreateDriveFolder('External Requests', root.id, token),
+    getOrCreateDriveFolder('Cases', root.id, token),
+    getOrCreateDriveFolder('Reports', root.id, token),
+    getOrCreateDriveFolder('Archive', root.id, token),
+  ]);
+
+  // 3. Current year folder inside Cases
   const casesYear = await getOrCreateDriveFolder(currentYear, cases.id, token);
-
-  // 5. Reports
-  const reports = await getOrCreateDriveFolder('Reports', root.id, token);
-
-  // 6. Archive
-  const archive = await getOrCreateDriveFolder('Archive', root.id, token);
 
   return {
     rootFolderId: root.id,

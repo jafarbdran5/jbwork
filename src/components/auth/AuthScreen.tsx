@@ -49,19 +49,6 @@ export const AuthScreen: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Direct 1-tap Admin entry for Jaafar Bdran
-  const handleDirectAdminLogin = () => {
-    setErrorMsg(null);
-    setLoading(true);
-    try {
-      signInAsSuperAdminDirectly();
-    } catch (err) {
-      console.error('Direct admin login error:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   // Handle Google Sign-in (Primary Gateway)
   const handleGoogleSignIn = async () => {
     setErrorMsg(null);
@@ -69,9 +56,26 @@ export const AuthScreen: React.FC = () => {
     try {
       await signInWithGoogle();
     } catch (err: any) {
-      console.warn('Google Sign-in popup notice, activating direct session:', err);
-      // Auto-fallback so Jaafar is never locked out on mobile or localhost
-      handleDirectAdminLogin();
+      console.error('Google Sign-in error:', err);
+      if (err?.message === 'UNAUTHORIZED_ACCOUNT') {
+        setErrorMsg(
+          isRTL 
+            ? 'هذا الحساب غير مصرح له بالدخول. يرجى مراجعة المشرف العام لإضافتك إلى فريق العمل.' 
+            : 'This account is not authorized. Please contact the administrator.'
+        );
+      } else if (err?.message === 'ACCOUNT_DEACTIVATED') {
+        setErrorMsg(
+          isRTL 
+            ? 'تم إيقاف أو تعطيل هذا الحساب. يرجى التواصل مع المشرف العام.' 
+            : 'This account has been deactivated. Please contact the administrator.'
+        );
+      } else {
+        setErrorMsg(
+          isRTL 
+            ? 'فشل تسجيل الدخول عبر Google. يرجى التأكد من الحساب والمحاولة مرة أخرى.' 
+            : 'Google Sign-in failed. Please try again.'
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -89,10 +93,6 @@ export const AuthScreen: React.FC = () => {
     setLoading(true);
 
     try {
-      if (email.toLowerCase().trim() === 'jfrbdran@gmail.com' || email.toLowerCase().trim().includes('jfrbdran')) {
-        handleDirectAdminLogin();
-        return;
-      }
       await signInWithEmail(email, password);
     } catch (err: any) {
       console.error('Sign in failed:', err);
@@ -256,25 +256,14 @@ export const AuthScreen: React.FC = () => {
                   <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
                   <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
                 </svg>
-                <span>{loading ? (isRTL ? 'جارٍ الاتصال بـ Google...' : 'Connecting to Google...') : (isRTL ? 'تسجيل الدخول بحساب Google' : 'Sign in with Google Account')}</span>
-              </button>
-
-              {/* DIRECT 1-TAP FAST ACCESS (Super Admin) */}
-              <button
-                type="button"
-                onClick={handleDirectAdminLogin}
-                disabled={loading}
-                className="w-full flex items-center justify-center gap-2.5 py-3 px-4 rounded-xl bg-gradient-to-r from-cyan-600/90 to-blue-600/90 hover:from-cyan-500 hover:to-blue-500 text-white font-bold text-xs transition-all shadow-lg shadow-cyan-900/30 border border-cyan-400/30 cursor-pointer active:scale-[0.99]"
-              >
-                <ShieldCheck className="w-4 h-4 text-cyan-200 shrink-0" />
-                <span>{isRTL ? 'الدخول المباشر الفوري (المشرف العام - جعفر بدران)' : 'Instant 1-Tap Access (Super Admin)'}</span>
+                <span>{loading ? (isRTL ? 'جارٍ التحقق والدخول...' : 'Authenticating...') : (isRTL ? 'تسجيل الدخول الرسمي بحساب Google' : 'Sign in with Google Account')}</span>
               </button>
 
               <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80 text-center">
                 <p className="text-[11px] text-slate-400 leading-relaxed">
                   {isRTL 
-                    ? 'تسجيل الدخول بحساب المشرف العام (jfrbdran@gmail.com) يقوم تلقائياً بتهيئة كافة الإعدادات والصلاحيات لمرة واحدة وبشكل سحابي فوري.' 
-                    : 'Signing in with jfrbdran@gmail.com automatically provisions all Super Admin permissions and Google Drive integrations.'}
+                    ? 'يتم التحقق من هوية المستخدم وصلاحياته مباشرة عبر حساب Google الرسمي أو بيانات الفريق المعتمدة.' 
+                    : 'User identity and role permissions are verified directly via authorized Google or team accounts.'}
                 </p>
               </div>
 

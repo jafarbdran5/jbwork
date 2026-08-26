@@ -1024,21 +1024,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       let token: string | null = null;
 
-      // 1. Direct Official Google Identity Services (GSI) Token Client (Clean, short popup, no Firebase handler)
+      // 1. Direct Official Google Identity Services (GSI) Token Client
       try {
         token = await requestGoogleWorkspaceTokenDirectly('select_account');
-        if (token) {
-          setCachedGoogleAccessToken(token);
-          setGoogleAccessTokenState(token);
-          const superAdmin = buildSuperAdminProfile('super_admin_jaafar', 'jfrbdran@gmail.com', 'جعفر بدران (Jaafar Bdran)');
-          setUserProfile(superAdmin);
-          saveLocalUser(superAdmin);
-          localStorage.setItem(LOCAL_STORAGE_SESSION_KEY, JSON.stringify(superAdmin));
-          localStorage.setItem(LOCAL_STORAGE_SETUP_KEY, 'true');
-          setIsSystemInitialized(true);
-          setIsOfflineSession(false);
-          return token;
-        }
       } catch (gsiErr) {
         console.warn('Direct GSI notice, proceeding with standard provider:', gsiErr);
       }
@@ -1048,21 +1036,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         res = await signInWithPopup(auth, googleProvider);
         const credential = GoogleAuthProvider.credentialFromResult(res);
-        token = credential?.accessToken || null;
+        if (!token) {
+          token = credential?.accessToken || null;
+        }
       } catch (popupErr: any) {
-        console.warn('Firebase popup sign in notice:', popupErr);
         if (popupErr?.code === 'auth/popup-closed-by-user' || popupErr?.code === 'auth/cancelled-popup-request') {
           return null;
         }
-        // Fallback directly on mobile or standalone PWA if popup handler is blocked or invalid:
-        const superAdmin = buildSuperAdminProfile('super_admin_jaafar', 'jfrbdran@gmail.com', 'جعفر بدران (Jaafar Bdran)');
-        setUserProfile(superAdmin);
-        saveLocalUser(superAdmin);
-        localStorage.setItem(LOCAL_STORAGE_SESSION_KEY, JSON.stringify(superAdmin));
-        localStorage.setItem(LOCAL_STORAGE_SETUP_KEY, 'true');
-        setIsSystemInitialized(true);
-        setIsOfflineSession(false);
-        return null;
+        console.warn('Firebase popup sign in error:', popupErr);
       }
 
       if (token) {
@@ -1072,24 +1053,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (res?.user) {
         await fetchUserProfile(res.user, 'google');
-      } else {
-        const superAdmin = buildSuperAdminProfile('super_admin_jaafar', 'jfrbdran@gmail.com', 'جعفر بدران (Jaafar Bdran)');
-        setUserProfile(superAdmin);
-        saveLocalUser(superAdmin);
-        localStorage.setItem(LOCAL_STORAGE_SESSION_KEY, JSON.stringify(superAdmin));
-        localStorage.setItem(LOCAL_STORAGE_SETUP_KEY, 'true');
+      } else if (token) {
+        // Fetch user info from Google userinfo API using the valid token
+        try {
+          const userinfoResp = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (userinfoResp.ok) {
+            const googleUser = await userinfoResp.json();
+            const fakeFirebaseUser: any = {
+              uid: googleUser.sub || `google_${Date.now()}`,
+              email: googleUser.email,
+              displayName: googleUser.name,
+              photoURL: googleUser.picture
+            };
+            await fetchUserProfile(fakeFirebaseUser, 'google');
+          }
+        } catch (fetchUserErr) {
+          console.warn('Error fetching Google userinfo:', fetchUserErr);
+        }
       }
       return token;
     } catch (err: any) {
       console.error('Google Sign In Error:', err);
-      // Ensure super admin is never locked out
-      const superAdmin = buildSuperAdminProfile('super_admin_jaafar', 'jfrbdran@gmail.com', 'جعفر بدران (Jaafar Bdran)');
-      setUserProfile(superAdmin);
-      saveLocalUser(superAdmin);
-      localStorage.setItem(LOCAL_STORAGE_SESSION_KEY, JSON.stringify(superAdmin));
-      localStorage.setItem(LOCAL_STORAGE_SETUP_KEY, 'true');
-      setIsSystemInitialized(true);
-      return null;
+      throw err;
     } finally {
       setIsLoading(false);
     }

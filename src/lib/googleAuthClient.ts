@@ -1,7 +1,7 @@
 import firebaseConfig from '../../firebase-applet-config.json';
 import { setCachedGoogleAccessToken } from './firebase';
 
-const GOOGLE_CLIENT_ID = (firebaseConfig as any).oAuthClientId || '667476281778-o3ebulvdcu3oslpfs3d4pe59q8aifjfb.apps.googleusercontent.com';
+const GOOGLE_CLIENT_ID = (firebaseConfig as any).oAuthClientId || '378669574005-gcfj68ff24bggc7tbihmudcim56h3ka1.apps.googleusercontent.com';
 
 export const WORKSPACE_SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets',

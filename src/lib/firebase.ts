@@ -16,7 +16,7 @@ import firebaseConfig from '../../firebase-applet-config.json';
 // Initialize Firebase App
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-// Initialize Firestore with robust local offline persistence and auto-detecting long polling
+// Initialize Firestore with robust local offline persistence and experimentalLongPolling
 let db: Firestore;
 const databaseId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
 try {
@@ -24,7 +24,7 @@ try {
     localCache: persistentLocalCache({
       tabManager: persistentMultipleTabManager()
     }),
-    experimentalAutoDetectLongPolling: true,
+    experimentalForceLongPolling: true,
   }, databaseId);
 } catch (e) {
   // If already initialized or unsupported

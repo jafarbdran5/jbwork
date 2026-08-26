@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useI18n } from '../../lib/i18n';
 import { useAuth } from '../../lib/auth';
-import { db } from '../../lib/firebase';
+import { db, setCachedGoogleAccessToken } from '../../lib/firebase';
+import { requestGoogleWorkspaceTokenDirectly } from '../../lib/googleAuthClient';
 import { 
   doc, 
   getDoc, 
@@ -100,6 +101,10 @@ export const GoogleWorkspaceSettings: React.FC = () => {
   const [manualExternalSheetUrl, setManualExternalSheetUrl] = useState<string>('');
   const [manualFormUrl, setManualFormUrl] = useState<string>('');
   const [manualDriveFolderId, setManualDriveFolderId] = useState<string>('');
+
+  // Direct Token input state
+  const [showManualTokenModal, setShowManualTokenModal] = useState<boolean>(false);
+  const [manualTokenInput, setManualTokenInput] = useState<string>('');
 
   // Load configuration from Firestore
   useEffect(() => {
@@ -932,11 +937,11 @@ export const GoogleWorkspaceSettings: React.FC = () => {
               <h2 className="text-base font-bold text-white">اتصال وتفويض Google Workspace (OAuth 2.0)</h2>
             </div>
             <p className="text-xs text-zinc-400">
-              ربط مباشر وآمن مع حساب Google بدون مفاتيح برمجية مكشوفة في المتصفح.
+              ربط مباشر ورسمي مع حساب Google بدون روابط طويلة أو أخطاء توجيه (Google Identity Services).
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 flex-wrap">
             {googleAccessToken ? (
               <div className="flex items-center gap-2">
                 <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
@@ -944,6 +949,7 @@ export const GoogleWorkspaceSettings: React.FC = () => {
                   <span>متصل ومفوض بنجاح</span>
                 </span>
                 <button
+                  type="button"
                   onClick={handleConnectGoogle}
                   className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-300 rounded-lg cursor-pointer"
                 >
@@ -952,15 +958,68 @@ export const GoogleWorkspaceSettings: React.FC = () => {
               </div>
             ) : (
               <button
+                type="button"
                 onClick={handleConnectGoogle}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg flex items-center gap-2 shadow-sm cursor-pointer"
+                className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold rounded-lg flex items-center gap-2 shadow-lg shadow-indigo-900/30 cursor-pointer active:scale-95 transition-all"
               >
                 <Zap className="w-4 h-4" />
-                <span>ربط حساب Google الآن</span>
+                <span>ربط حساب Google الرسمي (1-Click OAuth)</span>
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={() => setShowManualTokenModal(true)}
+              className="px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800 text-xs rounded-lg cursor-pointer transition-colors"
+            >
+              رمز يدوي / Token
+            </button>
           </div>
         </div>
+
+        {/* Manual Token Modal */}
+        {showManualTokenModal && (
+          <div className="p-4 bg-zinc-950 border border-indigo-500/30 rounded-xl space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-white flex items-center gap-2">
+                <Lock className="w-3.5 h-3.5 text-indigo-400" />
+                <span>إدخال أو فحص Google OAuth Access Token يدوياً:</span>
+              </span>
+              <button 
+                type="button"
+                onClick={() => setShowManualTokenModal(false)}
+                className="text-xs text-zinc-500 hover:text-zinc-300"
+              >
+                ✕ إغلاق
+              </button>
+            </div>
+            <p className="text-[11px] text-zinc-400 leading-relaxed">
+              إذا كنت تعمل على تطبيق مثبت محلياً وتريد تفعيل الصلاحيات فوراً دون نوافذ منبثقة، يمكنك إدخال الرمز مباشرة هنا:
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={manualTokenInput}
+                onChange={(e) => setManualTokenInput(e.target.value)}
+                placeholder="ya29.a0Ac..."
+                className="flex-1 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  if (manualTokenInput.trim()) {
+                    setCachedGoogleAccessToken(manualTokenInput.trim());
+                    showToast('success', '✓ تم تعيين وتفعيل رمز الوصول بنجاح!');
+                    setShowManualTokenModal(false);
+                  }
+                }}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg cursor-pointer"
+              >
+                تفعيل الرمز
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Granted Scopes info */}
         <div className="p-3 bg-[#18181B] rounded-lg border border-[#27272A] flex flex-wrap items-center gap-4 text-[11px] text-zinc-400">

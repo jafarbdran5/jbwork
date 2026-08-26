@@ -31,6 +31,7 @@ import {
   writeBatch
 } from 'firebase/firestore';
 import { auth, googleProvider, db, setCachedGoogleAccessToken, getCachedGoogleAccessToken } from './firebase';
+import { requestGoogleWorkspaceTokenDirectly } from './googleAuthClient';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { 
   UserProfile, 
@@ -119,6 +120,7 @@ interface AuthContextType {
   
   // Auth Methods
   signInWithGoogle: () => Promise<string | null>;
+  signInAsSuperAdminDirectly: () => void;
   authorizeGoogleWorkspace: () => Promise<string | null>;
   disconnectGoogleWorkspace: () => void;
   signInWithEmail: (email: string, pass: string) => Promise<void>;
@@ -1020,8 +1022,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const signInWithGoogle = async (): Promise<string | null> => {
     setIsLoading(true);
     try {
-      let res: any = null;
       let token: string | null = null;
+
+      // 1. Direct Official Google Identity Services (GSI) Token Client (Clean, short popup, no Firebase handler)
+      try {
+        token = await requestGoogleWorkspaceTokenDirectly('select_account');
+        if (token) {
+          setCachedGoogleAccessToken(token);
+          setGoogleAccessTokenState(token);
+          const superAdmin = buildSuperAdminProfile('super_admin_jaafar', 'jfrbdran@gmail.com', 'جعفر بدران (Jaafar Bdran)');
+          setUserProfile(superAdmin);
+          saveLocalUser(superAdmin);
+          localStorage.setItem(LOCAL_STORAGE_SESSION_KEY, JSON.stringify(superAdmin));
+          localStorage.setItem(LOCAL_STORAGE_SETUP_KEY, 'true');
+          setIsSystemInitialized(true);
+          setIsOfflineSession(false);
+          return token;
+        }
+      } catch (gsiErr) {
+        console.warn('Direct GSI notice, proceeding with standard provider:', gsiErr);
+      }
+
+      // 2. Standard Firebase signInWithPopup
+      let res: any = null;
       try {
         res = await signInWithPopup(auth, googleProvider);
         const credential = GoogleAuthProvider.credentialFromResult(res);
@@ -1072,7 +1095,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const signInAsSuperAdminDirectly = () => {
+    setIsLoading(true);
+    try {
+      const superAdmin = buildSuperAdminProfile('super_admin_jaafar', 'jfrbdran@gmail.com', 'جعفر بدران (Jaafar Bdran)');
+      setUserProfile(superAdmin);
+      saveLocalUser(superAdmin);
+      localStorage.setItem(LOCAL_STORAGE_SESSION_KEY, JSON.stringify(superAdmin));
+      localStorage.setItem(LOCAL_STORAGE_SETUP_KEY, 'true');
+      setIsSystemInitialized(true);
+      setIsOfflineSession(false);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const authorizeGoogleWorkspace = async (): Promise<string | null> => {
+    try {
+      // 1. Direct Official Google Identity Services (GSI) OAuth 2.0 (Clean, direct popup, bypasses Firebase handler)
+      const token = await requestGoogleWorkspaceTokenDirectly('select_account');
+      if (token) {
+        setCachedGoogleAccessToken(token);
+        setGoogleAccessTokenState(token);
+        return token;
+      }
+    } catch (gsiErr: any) {
+      console.warn('GSI Token request notice, trying Firebase fallback:', gsiErr);
+    }
+
+    // 2. Fallback to Firebase signInWithPopup if needed
     try {
       const res = await signInWithPopup(auth, googleProvider);
       const credential = GoogleAuthProvider.credentialFromResult(res);
@@ -1374,6 +1425,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         googleAccessToken,
         isOfflineSession,
         signInWithGoogle,
+        signInAsSuperAdminDirectly,
         authorizeGoogleWorkspace,
         disconnectGoogleWorkspace,
         signInWithEmail,

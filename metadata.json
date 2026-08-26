@@ -1,0 +1,6 @@
+{
+  "name": "JB Work - نظام عمل جعفر بدران الداخلي",
+  "description": "منظومة داخلية خاصة لإدارة القضايا والمهام والمتابعة والعمليات لفريق جعفر بدران (Jaafar Bdran Internal Work System)",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

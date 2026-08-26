@@ -1,0 +1,313 @@
+{
+  "entities": {
+    "User": {
+      "collection": "users",
+      "fields": {
+        "email": { "type": "string", "required": true },
+        "displayName": { "type": "string", "required": true },
+        "role": { "type": "string", "required": true, "enum": ["super_admin", "admin", "manager", "employee", "viewer"] },
+        "status": { "type": "string", "required": true, "enum": ["active", "inactive"] },
+        "phone": { "type": "string", "required": false },
+        "createdAt": { "type": "timestamp", "required": true },
+        "updatedAt": { "type": "timestamp", "required": true },
+        "lastLogin": { "type": "timestamp", "required": false },
+        "createdBy": { "type": "string", "required": false }
+      }
+    },
+    "Case": {
+      "collection": "cases",
+      "fields": {
+        "caseNumber": { "type": "string", "required": true },
+        "externalNumber": { "type": "string", "required": false },
+        "title": { "type": "string", "required": true },
+        "caseType": { "type": "string", "required": true },
+        "platform": { "type": "string", "required": false },
+        "status": { "type": "string", "required": true, "enum": ["new", "in_progress", "pending", "overdue", "completed", "cancelled"] },
+        "priority": { "type": "string", "required": true, "enum": ["low", "medium", "high", "urgent"] },
+        "assignedTo": { "type": "map", "required": false },
+        "client": { "type": "map", "required": false },
+        "typeSpecificData": { "type": "map", "required": false },
+        "description": { "type": "string", "required": false },
+        "notes": { "type": "string", "required": false },
+        "agreedAmount": { "type": "number", "required": false },
+        "totalPaid": { "type": "number", "required": false },
+        "currency": { "type": "string", "required": false },
+        "isDeleted": { "type": "boolean", "required": true },
+        "deletedAt": { "type": "timestamp", "required": false },
+        "nextFollowUp": { "type": "string", "required": false },
+        "createdAt": { "type": "timestamp", "required": true },
+        "updatedAt": { "type": "timestamp", "required": true },
+        "createdBy": { "type": "map", "required": true }
+      }
+    },
+    "CaseEvent": {
+      "collection": "caseEvents",
+      "fields": {
+        "caseId": { "type": "string", "required": true },
+        "action": { "type": "string", "required": true },
+        "title": { "type": "string", "required": true },
+        "description": { "type": "string", "required": false },
+        "performedBy": { "type": "map", "required": true },
+        "timestamp": { "type": "timestamp", "required": true },
+        "metadata": { "type": "map", "required": false }
+      }
+    },
+    "CaseTask": {
+      "collection": "caseTasks",
+      "fields": {
+        "caseId": { "type": "string", "required": true },
+        "caseNumber": { "type": "string", "required": false },
+        "title": { "type": "string", "required": true },
+        "description": { "type": "string", "required": false },
+        "assignedTo": { "type": "map", "required": false },
+        "priority": { "type": "string", "required": true },
+        "dueDate": { "type": "string", "required": false },
+        "status": { "type": "string", "required": true, "enum": ["todo", "in_progress", "completed", "cancelled"] },
+        "createdAt": { "type": "timestamp", "required": true },
+        "completedAt": { "type": "timestamp", "required": false },
+        "createdBy": { "type": "map", "required": true }
+      }
+    },
+    "CaseReminder": {
+      "collection": "caseReminders",
+      "fields": {
+        "caseId": { "type": "string", "required": false },
+        "caseNumber": { "type": "string", "required": false },
+        "caseTitle": { "type": "string", "required": false },
+        "title": { "type": "string", "required": true },
+        "dueDate": { "type": "string", "required": true },
+        "dueTime": { "type": "string", "required": false },
+        "note": { "type": "string", "required": false },
+        "status": { "type": "string", "required": true, "enum": ["upcoming", "completed", "overdue"] },
+        "assignedTo": { "type": "map", "required": false },
+        "createdAt": { "type": "timestamp", "required": true },
+        "createdBy": { "type": "map", "required": true }
+      }
+    },
+    "CaseLink": {
+      "collection": "caseLinks",
+      "fields": {
+        "caseId": { "type": "string", "required": true },
+        "title": { "type": "string", "required": true },
+        "url": { "type": "string", "required": true },
+        "description": { "type": "string", "required": false },
+        "category": { "type": "string", "required": false },
+        "createdAt": { "type": "timestamp", "required": true },
+        "createdBy": { "type": "map", "required": true }
+      }
+    },
+    "CaseAttachment": {
+      "collection": "caseAttachments",
+      "fields": {
+        "caseId": { "type": "string", "required": true },
+        "fileName": { "type": "string", "required": true },
+        "fileType": { "type": "string", "required": true },
+        "fileSize": { "type": "number", "required": true },
+        "downloadUrl": { "type": "string", "required": false },
+        "dataUrl": { "type": "string", "required": false },
+        "syncStatus": { "type": "string", "required": true },
+        "uploadedBy": { "type": "map", "required": true },
+        "createdAt": { "type": "timestamp", "required": true }
+      }
+    },
+    "Payment": {
+      "collection": "payments",
+      "fields": {
+        "caseId": { "type": "string", "required": true },
+        "caseNumber": { "type": "string", "required": false },
+        "caseTitle": { "type": "string", "required": false },
+        "clientName": { "type": "string", "required": false },
+        "agreedAmount": { "type": "number", "required": false },
+        "paymentAmount": { "type": "number", "required": true },
+        "currency": { "type": "string", "required": true },
+        "paymentDate": { "type": "string", "required": true },
+        "paymentMethod": { "type": "string", "required": true },
+        "note": { "type": "string", "required": false },
+        "receiptNumber": { "type": "string", "required": false },
+        "recordedBy": { "type": "map", "required": true },
+        "createdAt": { "type": "timestamp", "required": true }
+      }
+    },
+    "Client": {
+      "collection": "clients",
+      "fields": {
+        "name": { "type": "string", "required": true },
+        "company": { "type": "string", "required": false },
+        "phone": { "type": "string", "required": false },
+        "whatsapp": { "type": "string", "required": false },
+        "email": { "type": "string", "required": false },
+        "notes": { "type": "string", "required": false },
+        "createdAt": { "type": "timestamp", "required": true },
+        "updatedAt": { "type": "timestamp", "required": true }
+      }
+    },
+    "InternalRequest": {
+      "collection": "requests",
+      "fields": {
+        "type": { "type": "string", "required": true },
+        "title": { "type": "string", "required": true },
+        "description": { "type": "string", "required": false },
+        "caseId": { "type": "string", "required": false },
+        "caseNumber": { "type": "string", "required": false },
+        "priority": { "type": "string", "required": true },
+        "status": { "type": "string", "required": true },
+        "requestedBy": { "type": "map", "required": true },
+        "assignedTo": { "type": "map", "required": false },
+        "reviewNotes": { "type": "string", "required": false },
+        "createdAt": { "type": "timestamp", "required": true },
+        "updatedAt": { "type": "timestamp", "required": true }
+      }
+    },
+    "AuditLog": {
+      "collection": "auditLogs",
+      "fields": {
+        "action": { "type": "string", "required": true },
+        "details": { "type": "string", "required": false },
+        "entityType": { "type": "string", "required": true },
+        "entityId": { "type": "string", "required": false },
+        "entityTitle": { "type": "string", "required": false },
+        "performedBy": { "type": "map", "required": true },
+        "timestamp": { "type": "timestamp", "required": true }
+      }
+    },
+    "CaseType": {
+      "collection": "caseTypes",
+      "fields": {
+        "key": { "type": "string", "required": true },
+        "labelAr": { "type": "string", "required": true },
+        "labelEn": { "type": "string", "required": true },
+        "icon": { "type": "string", "required": false },
+        "fields": { "type": "array", "required": false },
+        "isActive": { "type": "boolean", "required": true },
+        "sortOrder": { "type": "number", "required": true }
+      }
+    },
+    "Platform": {
+      "collection": "platforms",
+      "fields": {
+        "name": { "type": "string", "required": true },
+        "nameAr": { "type": "string", "required": true },
+        "icon": { "type": "string", "required": false },
+        "isActive": { "type": "boolean", "required": true },
+        "sortOrder": { "type": "number", "required": true }
+      }
+    },
+    "SystemSetting": {
+      "collection": "settings",
+      "fields": {
+        "initialized": { "type": "boolean", "required": true },
+        "firstSuperAdminUid": { "type": "string", "required": false },
+        "systemNameAr": { "type": "string", "required": false },
+        "systemNameEn": { "type": "string", "required": false }
+      }
+    },
+    "CaseCounter": {
+      "collection": "caseCounters",
+      "fields": {
+        "year": { "type": "number", "required": true },
+        "lastNumber": { "type": "number", "required": true }
+      }
+    },
+    "ApprovalRequest": {
+      "collection": "approval_requests",
+      "fields": {
+        "title": { "type": "string", "required": true },
+        "type": { "type": "string", "required": true },
+        "status": { "type": "string", "required": true },
+        "requestedBy": { "type": "map", "required": true },
+        "amount": { "type": "number", "required": false },
+        "currency": { "type": "string", "required": false },
+        "caseId": { "type": "string", "required": false },
+        "caseNumber": { "type": "string", "required": false },
+        "justification": { "type": "string", "required": true },
+        "createdAt": { "type": "timestamp", "required": true }
+      }
+    },
+    "Project": {
+      "collection": "projects",
+      "fields": {
+        "title": { "type": "string", "required": true },
+        "category": { "type": "string", "required": true },
+        "status": { "type": "string", "required": true },
+        "progress": { "type": "number", "required": true },
+        "budget": { "type": "number", "required": false },
+        "currency": { "type": "string", "required": false },
+        "manager": { "type": "map", "required": false },
+        "milestones": { "type": "array", "required": false },
+        "createdAt": { "type": "timestamp", "required": true }
+      }
+    },
+    "ContentStudioItem": {
+      "collection": "content_studio",
+      "fields": {
+        "title": { "type": "string", "required": true },
+        "platform": { "type": "string", "required": true },
+        "status": { "type": "string", "required": true },
+        "bodyText": { "type": "string", "required": true },
+        "tags": { "type": "array", "required": false },
+        "createdAt": { "type": "timestamp", "required": true }
+      }
+    },
+    "KnowledgeArticle": {
+      "collection": "knowledge_base",
+      "fields": {
+        "title": { "type": "string", "required": true },
+        "category": { "type": "string", "required": true },
+        "content": { "type": "string", "required": true },
+        "steps": { "type": "array", "required": false },
+        "createdAt": { "type": "timestamp", "required": true }
+      }
+    },
+    "CustomForm": {
+      "collection": "forms",
+      "fields": {
+        "title": { "type": "string", "required": true },
+        "type": { "type": "string", "required": true },
+        "isActive": { "type": "boolean", "required": true },
+        "fields": { "type": "array", "required": true },
+        "createdAt": { "type": "timestamp", "required": true }
+      }
+    },
+    "SystemFile": {
+      "collection": "system_files",
+      "fields": {
+        "name": { "type": "string", "required": true },
+        "category": { "type": "string", "required": true },
+        "fileSize": { "type": "number", "required": true },
+        "uploadedBy": { "type": "map", "required": true },
+        "createdAt": { "type": "timestamp", "required": true }
+      }
+    },
+    "PersonalIdea": {
+      "collection": "personal_ideas",
+      "fields": {
+        "title": { "type": "string", "required": true },
+        "description": { "type": "string", "required": false },
+        "category": { "type": "string", "required": true },
+        "status": { "type": "string", "required": true },
+        "priority": { "type": "string", "required": true },
+        "createdAt": { "type": "timestamp", "required": true }
+      }
+    },
+    "PersonalGoal": {
+      "collection": "personal_goals",
+      "fields": {
+        "title": { "type": "string", "required": true },
+        "targetDate": { "type": "string", "required": true },
+        "progress": { "type": "number", "required": true },
+        "status": { "type": "string", "required": true },
+        "createdAt": { "type": "timestamp", "required": true }
+      }
+    },
+    "PersonalNote": {
+      "collection": "personal_notes",
+      "fields": {
+        "title": { "type": "string", "required": true },
+        "content": { "type": "string", "required": true },
+        "category": { "type": "string", "required": true },
+        "isSecret": { "type": "boolean", "required": true },
+        "createdAt": { "type": "timestamp", "required": true }
+      }
+    }
+  }
+}

@@ -1,0 +1,301 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function hasUserDoc() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    function isSuperAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.email == 'jfrbdran@gmail.com' ||
+        (hasUserDoc() && getUserData().role == 'super_admin')
+      );
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && (
+        isSuperAdmin() || 
+        (hasUserDoc() && getUserData().role == 'admin')
+      );
+    }
+    
+    function isNotViewer() {
+      return isAuthenticated() && (
+        isAdmin() || 
+        (hasUserDoc() && (
+          getUserData().role == 'manager' || 
+          getUserData().role == 'employee' ||
+          getUserData().role == 'admin' ||
+          getUserData().role == 'super_admin'
+        )) ||
+        // Fallback for authenticated members before role doc syncs
+        request.auth.token.email == 'jfrbdran@gmail.com'
+      );
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      // Internal-only creation: Only Admins or first initialization
+      allow create: if isAuthenticated() && (
+        isAdmin() ||
+        request.auth.token.email == 'jfrbdran@gmail.com' ||
+        !exists(/databases/$(database)/documents/settings/general)
+      );
+      // Updates: Admins or self profile updates
+      allow update: if isAuthenticated() && (
+        isAdmin() || 
+        (request.auth.uid == userId && 
+         request.resource.data.role == resource.data.role && 
+         request.resource.data.isActive == resource.data.isActive)
+      );
+      allow delete: if isSuperAdmin();
+    }
+    
+    // System Settings
+    match /settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && (
+        isSuperAdmin() || 
+        !exists(/databases/$(database)/documents/settings/general)
+      );
+    }
+
+    // Cases Collection
+    match /cases/{caseId} {
+      allow read: if isAuthenticated();
+      allow create: if isNotViewer();
+      allow update: if isNotViewer();
+      allow delete: if isAdmin();
+    }
+
+    // Case Events / Timeline
+    match /caseEvents/{eventId} {
+      allow read: if isAuthenticated();
+      allow create: if isNotViewer();
+      allow update, delete: if isSuperAdmin();
+    }
+
+    // Case Tasks
+    match /caseTasks/{taskId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isNotViewer();
+      allow delete: if isAdmin();
+    }
+
+    // Tasks Collection
+    match /tasks/{taskId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isNotViewer();
+      allow delete: if isAdmin();
+    }
+
+    // Reminders
+    match /caseReminders/{reminderId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isNotViewer();
+      allow delete: if isAdmin() || (isAuthenticated() && resource.data.createdBy.uid == request.auth.uid);
+    }
+
+    // Links
+    match /caseLinks/{linkId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isNotViewer();
+      allow delete: if isAdmin() || (isAuthenticated() && resource.data.createdBy.uid == request.auth.uid);
+    }
+
+    // Attachments
+    match /caseAttachments/{attachmentId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isNotViewer();
+      allow delete: if isAdmin() || (isAuthenticated() && resource.data.uploadedBy.uid == request.auth.uid);
+    }
+
+    // Case Notes
+    match /caseNotes/{noteId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isNotViewer();
+      allow delete: if isAdmin();
+    }
+
+    // Payments (Case Revenues)
+    match /payments/{paymentId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAdmin() || (hasUserDoc() && getUserData().role == 'manager');
+      allow delete: if isSuperAdmin();
+    }
+
+    // Employee Allocations (Case Shares)
+    match /employee_allocations/{allocId} {
+      // Super Admin can read all. Employee can only read their own allocations
+      allow read: if isSuperAdmin() || (isAuthenticated() && resource.data.employeeUid == request.auth.uid);
+      allow create, update, delete: if isSuperAdmin();
+    }
+
+    // Business Expenses (Super Admin Only)
+    match /business_expenses/{expenseId} {
+      allow read, write: if isSuperAdmin();
+    }
+
+    // Personal Finances (Strictly Super Admin Only)
+    match /personal_income/{incomeId} {
+      allow read, write: if isSuperAdmin();
+    }
+    match /personal_expenses/{expenseId} {
+      allow read, write: if isSuperAdmin();
+    }
+    match /inventory/{itemId} {
+      allow read, write: if isSuperAdmin();
+    }
+    match /assets/{assetId} {
+      allow read, write: if isSuperAdmin();
+    }
+
+    // Personal Area (Ideas, Goals, Notes - Super Admin Only)
+    match /personal_ideas/{ideaId} {
+      allow read, write: if isSuperAdmin();
+    }
+    match /personal_goals/{goalId} {
+      allow read, write: if isSuperAdmin();
+    }
+    match /personal_notes/{noteId} {
+      allow read, write: if isSuperAdmin();
+    }
+
+    // Approval Requests
+    match /approval_requests/{reqId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isSuperAdmin();
+    }
+
+    // Projects & Milestones
+    match /projects/{projectId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isNotViewer();
+      allow delete: if isAdmin();
+    }
+
+    // Content Studio
+    match /content_studio/{contentId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isNotViewer();
+      allow delete: if isAdmin();
+    }
+
+    // Knowledge Base
+    match /knowledge_base/{articleId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isNotViewer();
+      allow delete: if isAdmin();
+    }
+
+    // Forms & Responses
+    match /forms/{formId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+    match /form_responses/{responseId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+    match /recruitment_applicants/{applicantId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated();
+      allow update, delete: if isAdmin();
+    }
+    match /initiatives/{initiativeId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isNotViewer();
+      allow delete: if isAdmin();
+    }
+    match /authorized_users/{userId} {
+      allow read, write: if isAdmin();
+    }
+
+    // System Files & Drive
+    match /system_files/{fileId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isNotViewer();
+      allow delete: if isAdmin();
+    }
+
+    // Security Logs & Active Sessions
+    match /security_logs/{logId} {
+      allow read: if isSuperAdmin();
+      allow create: if true; // Allow logging from authentication attempts
+      allow update, delete: if false; // Append-only audit
+    }
+    match /sessions/{sessionId} {
+      allow read: if isSuperAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow write: if isAuthenticated();
+    }
+
+    // Clients
+    match /clients/{clientId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isNotViewer();
+      allow delete: if isAdmin();
+    }
+
+    // Requests (Internal)
+    match /requests/{requestId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated();
+      allow delete: if isAdmin();
+    }
+
+    // External Requests (Google Sheets / Forms / Website)
+    match /externalRequests/{reqId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isNotViewer();
+      allow delete: if isAdmin();
+    }
+
+    // Google Integrations Config
+    match /googleIntegrations/{configId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Google Sync Logs
+    match /googleSyncLogs/{logId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // Audit Logs (append-only)
+    match /auditLogs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isAuthenticated();
+      allow update, delete: if false; // Immutable audit log
+    }
+
+    // Case Types & Platforms
+    match /caseTypes/{typeId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+    match /platforms/{platformId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Counters for Atomic Case Numbering
+    match /caseCounters/{counterId} {
+      allow read, write: if isAuthenticated();
+    }
+  }
+}

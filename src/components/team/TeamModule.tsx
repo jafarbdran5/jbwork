@@ -33,6 +33,19 @@ import {
   ExternalLink
 } from 'lucide-react';
 
+export const AVAILABLE_DEPARTMENTS = [
+  { id: 'cases', labelAr: 'إدارة وتتبع القضايا', labelEn: 'Cases & Operations' },
+  { id: 'requests', labelAr: 'الطلبات والاستقبال (Google Forms)', labelEn: 'Requests & Intake' },
+  { id: 'clients', labelAr: 'دليل وسجلات العملاء', labelEn: 'Clients Directory' },
+  { id: 'finance', labelAr: 'المالية والمدفوعات والمستحقات', labelEn: 'Finance & Payments' },
+  { id: 'forms', labelAr: 'نماذج الاستقبال المخصصة', labelEn: 'Forms Center' },
+  { id: 'knowledge', labelAr: 'قاعدة المعرفة والخطط', labelEn: 'Knowledge Base' },
+  { id: 'content_studio', labelAr: 'استوديو المحتوى والإعلام', labelEn: 'Content Studio' },
+  { id: 'projects', labelAr: 'المشاريع والمبادرات', labelEn: 'Projects' },
+  { id: 'reports', labelAr: 'التقارير والإحصائيات', labelEn: 'Reports & Analytics' },
+  { id: 'files', labelAr: 'الملفات والدرايف المركزي', labelEn: 'Drive & Files' }
+];
+
 export const TeamModule: React.FC = () => {
   const { t, isRTL } = useI18n();
   const { userProfile, isSuperAdmin, isAdmin, createInternalUser, sendPasswordReset, deleteUser } = useAuth();
@@ -56,6 +69,7 @@ export const TeamModule: React.FC = () => {
   const [newJobTitle, setNewJobTitle] = useState('');
   const [newRole, setNewRole] = useState<UserRole>('employee');
   const [newIsActive, setNewIsActive] = useState(true);
+  const [newDepartments, setNewDepartments] = useState<string[]>(['cases', 'requests', 'clients']);
 
   // Success Created Credentials Modal
   const [createdCredentials, setCreatedCredentials] = useState<{
@@ -75,6 +89,7 @@ export const TeamModule: React.FC = () => {
   const [editDisplayName, setEditDisplayName] = useState<string>('');
   const [editPhone, setEditPhone] = useState<string>('');
   const [editJobTitle, setEditJobTitle] = useState<string>('');
+  const [editDepartments, setEditDepartments] = useState<string[]>(['cases', 'requests', 'clients']);
 
   // Password reset state feedback
   const [resetFeedback, setResetFeedback] = useState<{ email: string; success: boolean; msg: string } | null>(null);
@@ -234,6 +249,7 @@ export const TeamModule: React.FC = () => {
         phone: newPhone.trim(),
         jobTitle: newJobTitle.trim(),
         role: newRole,
+        departments: newDepartments,
         isActive: newIsActive
       };
 
@@ -307,6 +323,7 @@ export const TeamModule: React.FC = () => {
     setEditDisplayName(m.displayName || '');
     setEditPhone(m.phone || '');
     setEditJobTitle(m.jobTitle || '');
+    setEditDepartments(m.departments || ['cases', 'requests', 'clients']);
     setShowEditModal(true);
   };
 
@@ -323,6 +340,7 @@ export const TeamModule: React.FC = () => {
         displayName: editDisplayName.trim(),
         phone: editPhone.trim(),
         jobTitle: editJobTitle.trim(),
+        departments: editDepartments,
         updatedAt: serverTimestamp(),
       });
 
@@ -649,13 +667,34 @@ export const TeamModule: React.FC = () => {
                     )}
                   </div>
 
-                  {/* Role Badge */}
-                  <div className="pt-2 border-t border-slate-800/70 flex items-center justify-between">
-                    <div>{getRoleBadge(m.role)}</div>
-                    {m.lastLogin && (
-                      <span className="text-[10px] text-slate-500 font-mono">
-                        {isRTL ? 'آخر دخول نشط' : 'Active'}
-                      </span>
+                  {/* Role & Departments */}
+                  <div className="pt-2 border-t border-slate-800/70 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div>{getRoleBadge(m.role)}</div>
+                      {m.lastLogin && (
+                        <span className="text-[10px] text-slate-500 font-mono">
+                          {isRTL ? 'آخر دخول نشط' : 'Active'}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Departments Access Badges */}
+                    {m.departments && m.departments.length > 0 && (
+                      <div className="flex flex-wrap gap-1 pt-1">
+                        {m.departments.slice(0, 3).map(dId => {
+                          const deptObj = AVAILABLE_DEPARTMENTS.find(d => d.id === dId);
+                          return (
+                            <span key={dId} className="px-1.5 py-0.5 rounded-md bg-slate-800/90 border border-slate-700/60 text-[10px] text-slate-300 font-medium truncate max-w-[120px]">
+                              {deptObj ? (isRTL ? deptObj.labelAr : deptObj.labelEn) : dId}
+                            </span>
+                          );
+                        })}
+                        {m.departments.length > 3 && (
+                          <span className="px-1.5 py-0.5 rounded-md bg-slate-800 border border-slate-700 text-[10px] text-cyan-400 font-bold font-mono">
+                            +{m.departments.length - 3}
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -943,6 +982,50 @@ export const TeamModule: React.FC = () => {
                 </div>
               </div>
 
+              {/* Departments Access Selection */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-slate-300">
+                    {isRTL ? 'الأقسام والصلاحيات المسموح الوصول إليها' : 'Assigned Departments & Access'}
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setNewDepartments(newDepartments.length === AVAILABLE_DEPARTMENTS.length ? [] : AVAILABLE_DEPARTMENTS.map(d => d.id))}
+                    className="text-[11px] text-cyan-400 hover:text-cyan-300 cursor-pointer"
+                  >
+                    {newDepartments.length === AVAILABLE_DEPARTMENTS.length ? (isRTL ? 'إلغاء تحديد الكل' : 'Deselect All') : (isRTL ? 'تحديد كافة الأقسام' : 'Select All')}
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-slate-950 p-2.5 rounded-xl border border-slate-800/80 max-h-48 overflow-y-auto">
+                  {AVAILABLE_DEPARTMENTS.map(dept => {
+                    const isChecked = newDepartments.includes(dept.id);
+                    return (
+                      <label
+                        key={dept.id}
+                        className={`flex items-center gap-2 p-1.5 rounded-lg border text-xs cursor-pointer transition-colors ${
+                          isChecked ? 'bg-cyan-950/50 border-cyan-700/70 text-cyan-200' : 'bg-slate-900/40 border-slate-800/60 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setNewDepartments([...newDepartments, dept.id]);
+                            } else {
+                              setNewDepartments(newDepartments.filter(id => id !== dept.id));
+                            }
+                          }}
+                          className="w-3.5 h-3.5 rounded border-slate-700 text-cyan-600 focus:ring-cyan-500 cursor-pointer"
+                        />
+                        <span className="truncate text-[11px] font-medium">{isRTL ? dept.labelAr : dept.labelEn}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* Active Toggle */}
               <div className="flex items-center gap-2 pt-1">
                 <input
@@ -1136,6 +1219,50 @@ export const TeamModule: React.FC = () => {
                   <option value="employee">Employee (أخصائي قضايا / العمل على القضايا والمهام)</option>
                   <option value="viewer">Viewer (مشاهد فقط / عرض دون تعديل)</option>
                 </select>
+              </div>
+
+              {/* Departments Access Selection */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-slate-300">
+                    {isRTL ? 'الأقسام والصلاحيات المسموح الوصول إليها' : 'Assigned Departments & Access'}
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setEditDepartments(editDepartments.length === AVAILABLE_DEPARTMENTS.length ? [] : AVAILABLE_DEPARTMENTS.map(d => d.id))}
+                    className="text-[11px] text-cyan-400 hover:text-cyan-300 cursor-pointer"
+                  >
+                    {editDepartments.length === AVAILABLE_DEPARTMENTS.length ? (isRTL ? 'إلغاء تحديد الكل' : 'Deselect All') : (isRTL ? 'تحديد كافة الأقسام' : 'Select All')}
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 bg-slate-950 p-2.5 rounded-xl border border-slate-800/80 max-h-48 overflow-y-auto">
+                  {AVAILABLE_DEPARTMENTS.map(dept => {
+                    const isChecked = editDepartments.includes(dept.id);
+                    return (
+                      <label
+                        key={dept.id}
+                        className={`flex items-center gap-2 p-1.5 rounded-lg border text-xs cursor-pointer transition-colors ${
+                          isChecked ? 'bg-cyan-950/50 border-cyan-700/70 text-cyan-200' : 'bg-slate-900/40 border-slate-800/60 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setEditDepartments([...editDepartments, dept.id]);
+                            } else {
+                              setEditDepartments(editDepartments.filter(id => id !== dept.id));
+                            }
+                          }}
+                          className="w-3.5 h-3.5 rounded border-slate-700 text-cyan-600 focus:ring-cyan-500 cursor-pointer"
+                        />
+                        <span className="truncate text-[11px] font-medium">{isRTL ? dept.labelAr : dept.labelEn}</span>
+                      </label>
+                    );
+                  })}
+                </div>
               </div>
 
               <div className="flex items-center gap-2 pt-2">

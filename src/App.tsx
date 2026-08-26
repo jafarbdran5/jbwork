@@ -79,7 +79,7 @@ import {
 function MainAppShell() {
   const { t, isRTL, language, setLanguage } = useI18n();
   const { theme, toggleTheme } = useTheme();
-  const { userProfile, signOut, isSuperAdmin, canManageFinance } = useAuth();
+  const { userProfile, signOut, isSuperAdmin, canManageFinance, hasDepartmentAccess, canAccess } = useAuth();
 
   const [activeView, setActiveView] = useState<string>('dashboard');
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
@@ -174,6 +174,12 @@ function MainAppShell() {
     { id: 'trash', label: t('navTrash'), icon: Trash2 },
     { id: 'settings', label: t('navSettings'), icon: Settings },
   ];
+
+  const filteredNavItems = navItems.filter(item => {
+    if (isSuperAdmin) return true;
+    if (item.id === 'dashboard' || item.id === 'my_day' || item.id === 'activity_log') return true;
+    return canAccess(item.id);
+  });
 
   return (
     <div className={`min-h-screen bg-[#09090B] text-[#FAFAFA] flex flex-col font-sans selection:bg-indigo-600 selection:text-white ${isRTL ? 'rtl' : 'ltr'}`}>
@@ -308,7 +314,7 @@ function MainAppShell() {
           </div>
 
           <nav className="flex-1 space-y-1">
-            {navItems.map((item) => {
+            {filteredNavItems.map((item) => {
               const Icon = item.icon;
               const isActive = !selectedCaseId && activeView === item.id;
 
@@ -378,7 +384,7 @@ function MainAppShell() {
                   </button>
                 </div>
 
-                {navItems.map((item) => {
+                {filteredNavItems.map((item) => {
                   const Icon = item.icon;
                   const isActive = !selectedCaseId && activeView === item.id;
 

@@ -48,6 +48,7 @@ import { saveLocalUser, getLocalUsers } from './offlineStore';
 
 const LOCAL_STORAGE_SESSION_KEY = 'jb_work_cached_session';
 const LOCAL_STORAGE_SETUP_KEY = 'INITIAL_SETUP_COMPLETED';
+const INTERNAL_AUTH_CACHE_KEY = 'jb_internal_users_auth_cache';
 
 export interface CreateUserInput {
   email: string;
@@ -57,6 +58,7 @@ export interface CreateUserInput {
   jobTitle?: string;
   role: UserRole;
   isActive: boolean;
+  departments?: string[];
   permissions?: Partial<UserPermissions>;
 }
 
@@ -152,6 +154,8 @@ interface AuthContextType {
   isEmployee: boolean;
   isViewer: boolean;
   canEdit: boolean;
+  hasDepartmentAccess: (deptKey: string) => boolean;
+  canAccess: (moduleKey: string) => boolean;
   canViewFinancials: boolean;
   canManageFinance: boolean;
   canViewEmployeeEarnings: (employeeUid?: string) => boolean;
@@ -785,7 +789,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       role: data.role,
       status: data.isActive ? 'active' : 'inactive',
       isActive: data.isActive,
-      loginMethod: isCreatedViaAuth ? 'email_password' : 'google',
+      departments: data.departments || ['cases', 'requests', 'clients'],
+      loginMethod: isCreatedViaAuth ? 'email_password' : 'both',
       permissions: { ...defaultPerms, ...data.permissions },
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -798,6 +803,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
+
+    // Cache credentials locally for offline and non-google instant login
+    try {
+      const currentCreds = JSON.parse(localStorage.getItem(INTERNAL_AUTH_CACHE_KEY) || '{}');
+      currentCreds[email] = {
+        password,
+        profile: {
+          ...newProfile,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }
+      };
+      localStorage.setItem(INTERNAL_AUTH_CACHE_KEY, JSON.stringify(currentCreds));
+    } catch (_) {}
 
     await logSecurityEvent({
       action: 'user_created',
@@ -1171,19 +1190,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         // If Firebase Auth credential is still null (e.g. network/offline, provider disabled, or offline session),
-        // fallback to Firestore users collection or system predefined accounts so user is NEVER locked out!
+        // fallback to Firestore users collection, local cache, or system predefined accounts so user is NEVER locked out!
         if (!userCred) {
           let matchedProfile: UserProfile | null = null;
+
+          // 1. Check offline credentials cache
           try {
-            const qUsers = query(collection(db, 'users'), where('email', '==', email), limit(1));
-            const snap = await getDocs(qUsers);
-            if (!snap.empty) {
-              matchedProfile = snap.docs[0].data() as UserProfile;
+            const cachedCreds = JSON.parse(localStorage.getItem(INTERNAL_AUTH_CACHE_KEY) || '{}');
+            if (cachedCreds[email] && cachedCreds[email].password === pass) {
+              matchedProfile = cachedCreds[email].profile;
             }
-          } catch (dbErr) {
-            console.warn('Firestore query error:', dbErr);
+          } catch (_) {}
+
+          // 2. Check Firestore users collection
+          if (!matchedProfile) {
+            try {
+              const qUsers = query(collection(db, 'users'), where('email', '==', email), limit(1));
+              const snap = await getDocs(qUsers);
+              if (!snap.empty) {
+                matchedProfile = snap.docs[0].data() as UserProfile;
+              }
+            } catch (dbErr) {
+              console.warn('Firestore query error:', dbErr);
+            }
           }
 
+          // 3. Check local users store
           if (!matchedProfile) {
             const localList = getLocalUsers();
             const foundInLocal = localList.find(u => u.email && u.email.toLowerCase().trim() === email);
@@ -1385,6 +1417,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const isViewer = role === 'viewer';
   const canEdit = isManager || isEmployee;
   
+  // Department & Module Access Checks
+  const hasDepartmentAccess = (deptKey: string): boolean => {
+    if (isSuperAdmin || isAdmin) return true;
+    if (!userProfile) return false;
+    
+    // If specific departments are set on userProfile, respect them
+    if (userProfile.departments && userProfile.departments.length > 0) {
+      if (userProfile.departments.includes('all') || userProfile.departments.includes(deptKey)) {
+        return true;
+      }
+      // Common aliases
+      if (deptKey === 'cases' && (userProfile.departments.includes('cases') || userProfile.departments.includes('my_cases'))) return true;
+      if (deptKey === 'requests' && (userProfile.departments.includes('requests') || userProfile.departments.includes('external_requests'))) return true;
+      if (deptKey === 'finance' && (userProfile.departments.includes('finance') || userProfile.departments.includes('payments'))) return true;
+      return false;
+    }
+
+    // Default department access if departments array is not explicitly configured
+    if (deptKey === 'cases' || deptKey === 'my_cases' || deptKey === 'tasks' || deptKey === 'reminders' || deptKey === 'knowledge' || deptKey === 'forms' || deptKey === 'files') {
+      return true;
+    }
+    if (deptKey === 'requests' || deptKey === 'external_requests') {
+      return userProfile?.permissions?.requestsView !== false;
+    }
+    if (deptKey === 'clients') {
+      return true;
+    }
+    if (deptKey === 'finance' || deptKey === 'payments' || deptKey === 'profits' || deptKey === 'my_finances') {
+      return canViewFinancials;
+    }
+    if (deptKey === 'team') {
+      return canManageTeam;
+    }
+    if (deptKey === 'security' || deptKey === 'backup' || deptKey === 'settings') {
+      return isSuperAdmin || isAdmin;
+    }
+    return true;
+  };
+
+  const canAccess = (moduleKey: string): boolean => {
+    return hasDepartmentAccess(moduleKey);
+  };
+
   // Granular Permissions
   const canViewFinancials = isSuperAdmin || userProfile?.permissions?.financeView === true;
   const canManageFinance = isSuperAdmin || userProfile?.permissions?.financeManage === true;
@@ -1435,6 +1510,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isEmployee,
         isViewer,
         canEdit,
+        hasDepartmentAccess,
+        canAccess,
         canViewFinancials,
         canManageFinance,
         canViewEmployeeEarnings,

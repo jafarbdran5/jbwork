@@ -33,6 +33,7 @@ export interface UserProfile {
   phone?: string;
   jobTitle?: string;
   avatarUrl?: string;
+  departments?: string[]; // e.g. ['cases', 'requests', 'clients', 'finance', 'knowledge', 'projects', 'forms', 'files']
   loginMethod?: LoginMethod;
   googleAccountId?: string;
   googleEmail?: string;
@@ -100,6 +101,7 @@ export interface CaseItem {
   };
   client?: {
     id?: string;
+    clientId?: string; // Unique customer identifier e.g. CLT-2026-0001
     name: string;
     phone?: string;
     whatsapp?: string;
@@ -249,6 +251,7 @@ export interface PaymentRecord {
 
 export interface ClientRecord {
   id: string;
+  clientId?: string; // Permanent Unique ID e.g. CLT-0001
   name: string;
   company?: string;
   phone?: string;
@@ -256,6 +259,7 @@ export interface ClientRecord {
   email?: string;
   notes?: string;
   caseCount?: number;
+  caseIds?: string[];
   createdAt: any;
   updatedAt: any;
 }

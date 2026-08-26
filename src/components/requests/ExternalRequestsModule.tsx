@@ -13,7 +13,8 @@ import {
   serverTimestamp,
   getDocs,
   where,
-  getDoc
+  getDoc,
+  limit
 } from 'firebase/firestore';
 import { 
   ExternalRequest, 
@@ -257,7 +258,40 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
         }
       }
 
-      // 3. Create Case in Firestore
+      // 3. Client profile lookup / linking
+      let clientId = '';
+      const clientPhone = selectedReq.phone?.trim() || selectedReq.whatsapp?.trim() || '';
+      const clientEmail = selectedReq.email?.trim().toLowerCase() || '';
+      const clientName = selectedReq.clientName.trim();
+
+      if (clientPhone || clientEmail || clientName) {
+        try {
+          let matchedClientDoc: any = null;
+          if (clientPhone) {
+            const qPhone = query(collection(db, 'clients'), where('phone', '==', clientPhone), limit(1));
+            const phoneSnap = await getDocs(qPhone);
+            if (!phoneSnap.empty) matchedClientDoc = phoneSnap.docs[0];
+          }
+          if (!matchedClientDoc && clientEmail) {
+            const qEmail = query(collection(db, 'clients'), where('email', '==', clientEmail), limit(1));
+            const emailSnap = await getDocs(qEmail);
+            if (!emailSnap.empty) matchedClientDoc = emailSnap.docs[0];
+          }
+          if (!matchedClientDoc && clientName) {
+            const qName = query(collection(db, 'clients'), where('name', '==', clientName), limit(1));
+            const nameSnap = await getDocs(qName);
+            if (!nameSnap.empty) matchedClientDoc = nameSnap.docs[0];
+          }
+
+          if (matchedClientDoc) {
+            clientId = matchedClientDoc.id;
+          }
+        } catch (clientErr) {
+          console.warn('Client profile search notice:', clientErr);
+        }
+      }
+
+      // 3.1 Create Case in Firestore
       const newCaseData: Omit<CaseItem, 'id'> = {
         caseNumber,
         externalNumber: selectedReq.requestId,
@@ -267,6 +301,7 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
         status: 'new',
         priority: convertPriority,
         client: {
+          clientId: clientId || '',
           name: selectedReq.clientName,
           phone: selectedReq.phone || '',
           whatsapp: selectedReq.whatsapp || selectedReq.phone || '',
@@ -295,7 +330,44 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
       const caseDocRef = await addDoc(collection(db, 'cases'), cleanFirestoreData(newCaseData));
       const newCaseId = caseDocRef.id;
 
-      // 3.1. Save Drive Attachments directly into caseAttachments collection for instant access
+      // Update / create client record with newCaseId
+      try {
+        if (clientId) {
+          const clientSnap = await getDoc(doc(db, 'clients', clientId));
+          if (clientSnap.exists()) {
+            const curCaseIds: string[] = clientSnap.data().caseIds || [];
+            if (!curCaseIds.includes(newCaseId)) {
+              await updateDoc(doc(db, 'clients', clientId), {
+                caseIds: [...curCaseIds, newCaseId],
+                totalCasesCount: (clientSnap.data().totalCasesCount || 0) + 1,
+                updatedAt: serverTimestamp()
+              });
+            }
+          }
+        } else if (clientName) {
+          const createdClientRef = await addDoc(collection(db, 'clients'), cleanFirestoreData({
+            name: clientName,
+            phone: clientPhone,
+            whatsapp: selectedReq.whatsapp || clientPhone,
+            email: clientEmail,
+            caseIds: [newCaseId],
+            totalCasesCount: 1,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+            createdBy: {
+              uid: userProfile.uid,
+              name: userProfile.displayName
+            }
+          }));
+          await updateDoc(doc(db, 'cases', newCaseId), {
+            'client.clientId': createdClientRef.id
+          });
+        }
+      } catch (cErr) {
+        console.warn('Client caseIds sync notice:', cErr);
+      }
+
+      // 3.2. Save Drive Attachments directly into caseAttachments collection for instant access
       if (selectedReq.driveAttachments && selectedReq.driveAttachments.length > 0) {
         for (const att of selectedReq.driveAttachments) {
           try {
@@ -423,7 +495,71 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
         }
       }));
 
-      // 3. Log Audit
+      // 3. Save Drive Attachments directly into caseAttachments for the linked case
+      if (selectedReq.driveAttachments && selectedReq.driveAttachments.length > 0) {
+        for (const att of selectedReq.driveAttachments) {
+          try {
+            await addDoc(collection(db, 'caseAttachments'), cleanFirestoreData({
+              caseId: caseToLink.id,
+              caseNumber: caseToLink.caseNumber,
+              fileName: att.fileName || 'مستند مرفق من الطلب الخارجي',
+              fileType: att.fileType || 'application/pdf',
+              fileSize: att.fileSize || 0,
+              downloadUrl: att.url,
+              dataUrl: att.url,
+              syncStatus: 'synced',
+              driveFileId: att.fileId || '',
+              uploadedBy: {
+                uid: userProfile.uid,
+                name: selectedReq.clientName || 'العميل (عبر النموذج/الموقع)'
+              },
+              notes: `تم ربطه تلقائياً من الطلب الخارجي ${selectedReq.requestId}`,
+              createdAt: serverTimestamp()
+            }));
+          } catch (attErr) {
+            console.warn('Failed to link attachment to caseAttachments:', attErr);
+          }
+        }
+      }
+
+      // 4. Update Client record's caseIds if applicable
+      try {
+        const clientPhone = selectedReq.phone?.trim() || selectedReq.whatsapp?.trim() || '';
+        const clientEmail = selectedReq.email?.trim().toLowerCase() || '';
+        const clientName = selectedReq.clientName.trim();
+
+        let matchedClientDoc: any = null;
+        if (clientPhone) {
+          const qPhone = query(collection(db, 'clients'), where('phone', '==', clientPhone), limit(1));
+          const phoneSnap = await getDocs(qPhone);
+          if (!phoneSnap.empty) matchedClientDoc = phoneSnap.docs[0];
+        }
+        if (!matchedClientDoc && clientEmail) {
+          const qEmail = query(collection(db, 'clients'), where('email', '==', clientEmail), limit(1));
+          const emailSnap = await getDocs(qEmail);
+          if (!emailSnap.empty) matchedClientDoc = emailSnap.docs[0];
+        }
+        if (!matchedClientDoc && clientName) {
+          const qName = query(collection(db, 'clients'), where('name', '==', clientName), limit(1));
+          const nameSnap = await getDocs(qName);
+          if (!nameSnap.empty) matchedClientDoc = nameSnap.docs[0];
+        }
+
+        if (matchedClientDoc) {
+          const curCaseIds: string[] = matchedClientDoc.data().caseIds || [];
+          if (!curCaseIds.includes(caseToLink.id)) {
+            await updateDoc(doc(db, 'clients', matchedClientDoc.id), {
+              caseIds: [...curCaseIds, caseToLink.id],
+              totalCasesCount: (matchedClientDoc.data().totalCasesCount || 0) + 1,
+              updatedAt: serverTimestamp()
+            });
+          }
+        }
+      } catch (cErr) {
+        console.warn('Client caseIds linking notice:', cErr);
+      }
+
+      // 5. Log Audit
       await logAuditAndEvent({
         action: 'LINK_EXTERNAL_REQUEST',
         details: `ربط الطلب الخارجي ${selectedReq.requestId} بالقضية ${caseToLink.caseNumber}`,

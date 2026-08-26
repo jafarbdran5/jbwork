@@ -15,10 +15,10 @@ export interface AuditParams {
 export async function logAuditAndEvent(params: AuditParams) {
   try {
     const performedBy = {
-      uid: params.user.uid,
-      name: params.user.displayName || 'مستخدم النظام',
-      email: params.user.email || '',
-      role: params.user.role || 'employee'
+      uid: params.user?.uid || 'system',
+      name: (params.user as any)?.displayName || (params.user as any)?.name || 'مستخدم النظام',
+      email: params.user?.email || '',
+      role: params.user?.role || 'employee'
     };
 
     // 1. Write immutable audit log

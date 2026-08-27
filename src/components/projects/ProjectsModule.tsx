@@ -14,6 +14,7 @@ import {
   orderBy
 } from 'firebase/firestore';
 import { ProjectItem, ProjectMilestone, CasePriority } from '../../types';
+import { deleteEntity } from '../../services/database/deleteService';
 import { 
   Briefcase, 
   Plus, 
@@ -343,10 +344,15 @@ export const ProjectsModule: React.FC<{ onSelectCase?: (caseId: string) => void 
                     <button
                       onClick={async () => {
                         if (window.confirm(isRTL ? 'هل أنت متأكد من حذف هذا المشروع؟' : 'Delete this project?')) {
-                          await deleteDoc(doc(db, 'projects', proj.id));
+                          setProjects(prev => prev.filter(p => p.id !== proj.id));
+                          await deleteEntity('project', proj.id, userProfile, {
+                            customTitle: proj.title,
+                            reason: 'حذف مشروع'
+                          });
                         }
                       }}
                       className="text-xs text-rose-400 hover:text-rose-300 p-1 cursor-pointer"
+                      title={isRTL ? 'حذف المشروع' : 'Delete'}
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>

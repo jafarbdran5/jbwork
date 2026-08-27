@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useI18n } from '../../lib/i18n';
+import { useTheme } from '../../lib/theme';
 import { useAuth } from '../../lib/auth';
 import { db } from '../../lib/firebase';
 import { 
@@ -11,115 +12,190 @@ import {
   updateDoc, 
   doc, 
   serverTimestamp,
-  getDocs,
   where,
-  getDoc,
   limit
 } from 'firebase/firestore';
 import { 
   ExternalRequest, 
-  ExternalRequestStatus, 
-  ExternalRequestSource, 
-  GoogleWorkspaceConfig,
   CaseItem
 } from '../../types';
+import { 
+  SavedPublicSheet, 
+  SheetRowItem, 
+  SheetColumn, 
+  SheetWorksheetTab,
+  getSavedPublicSheets, 
+  savePublicSheet, 
+  deletePublicSheet, 
+  fetchPublicGoogleSheet, 
+  discoverSheetTabs,
+  extractSheetInfo, 
+  extractFilesAndLinksFromRow,
+  getGoogleDrivePreviewUrl,
+  analyzeCellValue,
+  parseRawTableText
+} from '../../lib/googleSheetsReader';
 import { logAuditAndEvent } from '../../lib/audit';
 import { generateNextCaseNumber } from '../../lib/firebase';
+import { saveLocalCase } from '../../lib/offlineStore';
 import { 
-  runFullGoogleSync, 
-  createCaseDriveFolder, 
   suggestCaseType, 
   detectPlatform, 
-  extractUrls,
   cleanFirestoreData
 } from '../../lib/googleWorkspace';
 import { DEFAULT_CASE_TYPES, DEFAULT_PLATFORMS } from '../../lib/constants';
 import { 
-  Inbox, 
+  FileSpreadsheet, 
+  Inbox,
   Plus, 
   CheckCircle, 
-  XCircle, 
+  CheckCircle2,
   Clock, 
   User, 
-  Tag, 
-  Layers, 
-  MessageSquare,
   X,
   RefreshCw,
   Search,
-  Filter,
   ExternalLink,
   Phone,
   Mail,
-  FileText,
   FolderPlus,
   Link as LinkIcon,
-  ShieldCheck,
-  AlertTriangle,
-  Send,
-  Globe,
   Copy,
   Check,
-  ChevronRight,
-  Database,
+  Layers,
   Calendar,
   Sparkles,
-  ArrowRight,
   Paperclip,
   ImageIcon,
   Eye,
-  Download
+  Trash2,
+  FileSearch,
+  Table as TableIcon,
+  LayoutGrid,
+  UserPlus,
+  CheckSquare,
+  Compass,
+  ArrowUpDown
 } from 'lucide-react';
 
 interface ExternalRequestsModuleProps {
   onSelectCase?: (caseId: string) => void;
-  onNavigateToSettings?: () => void;
+  onNavigate?: (view: string) => void;
+  onOpenQuickCaseWithData?: (prefill: { title: string; clientName: string; clientPhone?: string; notes: string; links: string[] }) => void;
+}
+
+// Helper to reliably extract details from a dynamic sheet row
+function getRowDetails(row: SheetRowItem, sheet: SavedPublicSheet | null) {
+  const extracted = extractFilesAndLinksFromRow(row);
+  const driveLinks = extracted.driveLinks || [];
+  const otherLinks = extracted.otherLinks || [];
+  const fileLinks = [...driveLinks, ...otherLinks];
+  const allUrls = [...driveLinks, ...otherLinks];
+  const phone = extracted.phones[0] || '';
+  const email = extracted.emails[0] || '';
+
+  // Look for client name
+  let clientName = '';
+  if (sheet && sheet.columns) {
+    const nameCol = sheet.columns.find(c => {
+      const l = c.label.toLowerCase();
+      return l.includes('اسم') || l.includes('name') || l.includes('عميل') || l.includes('صاحب') || l.includes('مقدم');
+    });
+    if (nameCol && row[nameCol.id]) {
+      clientName = String(row[nameCol.id]).trim();
+    }
+  }
+
+  if (!clientName) {
+    // Search entries
+    for (const [key, val] of Object.entries(row)) {
+      if (key.startsWith('_') || !val) continue;
+      const l = key.toLowerCase();
+      if ((l.includes('اسم') || l.includes('name') || l.includes('عميل')) && typeof val === 'string' && val.trim().length > 2) {
+        clientName = val.trim();
+        break;
+      }
+    }
+  }
+
+  // Build notes summary
+  const summaryParts: string[] = [];
+  Object.entries(row).forEach(([k, v]) => {
+    if (k.startsWith('_') || v === null || v === undefined || v === '') return;
+    summaryParts.push(`${k}: ${v}`);
+  });
+  const notesSummary = summaryParts.join('\n');
+
+  return {
+    clientName,
+    phone,
+    email,
+    fileLinks,
+    allUrls,
+    notesSummary
+  };
 }
 
 export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({ 
   onSelectCase, 
-  onNavigateToSettings 
+  onNavigate,
+  onOpenQuickCaseWithData 
 }) => {
   const { t, isRTL } = useI18n();
-  const { userProfile, isSuperAdmin, isManager, googleAccessToken, authorizeGoogleWorkspace } = useAuth();
+  const { isDark } = useTheme();
+  const { userProfile } = useAuth();
 
-  const [requests, setRequests] = useState<ExternalRequest[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [isSyncing, setIsSyncing] = useState<boolean>(false);
-  const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+  // Top Section Mode: Google Sheets Hub vs Firestore DB
+  const [sectionMode, setSectionMode] = useState<'sheets_hub' | 'firestore_db'>('sheets_hub');
 
-  // Google config from Firestore
-  const [googleConfig, setGoogleConfig] = useState<GoogleWorkspaceConfig | null>(null);
+  // ==========================================
+  // 1. GOOGLE SHEETS STATE & LOGIC
+  // ==========================================
+  const [sheets, setSheets] = useState<SavedPublicSheet[]>([]);
+  const [selectedSheetId, setSelectedSheetId] = useState<string>('');
+  const [viewMode, setViewMode] = useState<'table' | 'cards'>('table');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'unlinked' | 'case_linked' | 'case_created' | 'client_created' | 'task_created' | 'has_files'>('all');
+  const [isDiscoveringTabs, setIsDiscoveringTabs] = useState(false);
 
-  // Filters
-  const [activeTab, setActiveTab] = useState<string>('all');
-  const [sourceFilter, setSourceFilter] = useState<string>('all');
-  const [searchQuery, setSearchQuery] = useState<string>('');
-
-  // Selected Request Detail Drawer
-  const [selectedReq, setSelectedReq] = useState<ExternalRequest | null>(null);
-  const [previewImage, setPreviewImage] = useState<{ url: string; name: string } | null>(null);
-
-  // Modals
-  const [showConvertModal, setShowConvertModal] = useState<boolean>(false);
-  const [showLinkModal, setShowLinkModal] = useState<boolean>(false);
-  const [showManualModal, setShowManualModal] = useState<boolean>(false);
+  // Sheets Modals & Form State
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isAddTabModalOpen, setIsAddTabModalOpen] = useState(false);
+  const [isLinkToCaseModalOpen, setIsLinkToCaseModalOpen] = useState(false);
+  const [inspectingRow, setInspectingRow] = useState<SheetRowItem | null>(null);
+  const [linkingRow, setLinkingRow] = useState<SheetRowItem | null>(null);
+  const [previewingFile, setPreviewingFile] = useState<{ url: string; title: string } | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Convert to Case Modal state
-  const [convertCaseType, setConvertCaseType] = useState<string>('impersonation');
-  const [convertPlatform, setConvertPlatform] = useState<string>('Instagram');
-  const [convertPriority, setConvertPriority] = useState<'low' | 'medium' | 'high' | 'urgent'>('medium');
-  const [convertCreateDriveFolder, setConvertCreateDriveFolder] = useState<boolean>(true);
-  const [isConverting, setIsConverting] = useState<boolean>(false);
+  // Tab Form State
+  const [newTabName, setNewTabName] = useState('');
+  const [newTabGid, setNewTabGid] = useState('');
 
-  // Link to Existing Case state
-  const [existingCases, setExistingCases] = useState<CaseItem[]>([]);
-  const [linkCaseSearch, setLinkCaseSearch] = useState<string>('');
-  const [selectedExistingCaseId, setSelectedExistingCaseId] = useState<string>('');
-  const [isLinking, setIsLinking] = useState<boolean>(false);
+  // Add Sheet Form State
+  const [importMode, setImportMode] = useState<'url' | 'paste'>('url');
+  const [pastedData, setPastedData] = useState('');
+  const [formUrl, setFormUrl] = useState('');
+  const [formTitle, setFormTitle] = useState('');
+  const [formDescription, setFormDescription] = useState('');
+  const [formCategory, setFormCategory] = useState('استقبال طلبات وبلاغات');
+  const [formGid, setFormGid] = useState('0');
+  const [isTestingUrl, setIsTestingUrl] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string; rowCount?: number; columns?: SheetColumn[]; discoveredTabs?: SheetWorksheetTab[] } | null>(null);
 
-  // Manual Request Modal state
+  // Pagination & Sorting for Table
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage] = useState(25);
+  const [sortColumn, setSortColumn] = useState<string | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+
+  // ==========================================
+  // 2. FIRESTORE EXTERNAL REQUESTS STATE
+  // ==========================================
+  const [firestoreRequests, setFirestoreRequests] = useState<ExternalRequest[]>([]);
+  const [showManualModal, setShowManualModal] = useState<boolean>(false);
+
+  // Manual Form State
   const [manualName, setManualName] = useState('');
   const [manualPhone, setManualPhone] = useState('');
   const [manualEmail, setManualEmail] = useState('');
@@ -130,193 +206,455 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
   const [manualDescription, setManualDescription] = useState('');
   const [manualNotes, setManualNotes] = useState('');
 
-  // Load Real-time External Requests from Firestore
+  // System Cases List for Direct Linking
+  const [systemCases, setSystemCases] = useState<CaseItem[]>([]);
+  const [caseSearchQuery, setCaseSearchQuery] = useState('');
+  const [isConvertingAction, setIsConvertingAction] = useState(false);
+
+  // Show Toast helper
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 4000);
+  };
+
+  // Load Saved Sheets on mount
   useEffect(() => {
-    const q = query(collection(db, 'externalRequests'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snap) => {
+    const loaded = getSavedPublicSheets();
+    setSheets(loaded);
+    if (loaded.length > 0) {
+      setSelectedSheetId(loaded[0].id);
+    }
+  }, []);
+
+  // Load Real-time Firestore External Requests & Cases
+  useEffect(() => {
+    const qReq = query(collection(db, 'externalRequests'), orderBy('createdAt', 'desc'));
+    const unsubReq = onSnapshot(qReq, (snap) => {
       const list: ExternalRequest[] = snap.docs.map(d => ({
         id: d.id,
         ...d.data()
       } as ExternalRequest));
-      setRequests(list);
-      setLoading(false);
+      setFirestoreRequests(list);
     }, (err) => {
-      console.warn('External requests snapshot fallback:', err);
-      setLoading(false);
+      console.warn('External requests snapshot notice:', err);
     });
 
-    // Load Google Workspace Config
-    const unsubConfig = onSnapshot(doc(db, 'googleIntegrations', 'config'), (docSnap) => {
-      if (docSnap.exists()) {
-        setGoogleConfig(docSnap.data() as GoogleWorkspaceConfig);
-      }
+    const qCases = query(collection(db, 'cases'), where('isDeleted', '==', false), orderBy('createdAt', 'desc'), limit(100));
+    const unsubCases = onSnapshot(qCases, (snap) => {
+      const list: CaseItem[] = snap.docs.map(d => ({
+        id: d.id,
+        ...d.data()
+      } as CaseItem));
+      setSystemCases(list);
+    }, (err) => {
+      console.warn('System cases query notice:', err);
     });
 
     return () => {
-      unsubscribe();
-      unsubConfig();
+      unsubReq();
+      unsubCases();
     };
   }, []);
 
-  // Fetch Existing Cases for Linking Modal
-  const loadExistingCases = async () => {
+  // Active Current Sheet
+  const currentSheet = useMemo(() => {
+    return sheets.find(s => s.id === selectedSheetId) || sheets[0] || null;
+  }, [sheets, selectedSheetId]);
+
+  // Handle Worksheet Tab Switch
+  const handleSwitchTab = async (sheetId: string, tab: SheetWorksheetTab) => {
+    const target = sheets.find(s => s.id === sheetId);
+    if (!target) return;
+
+    // Set active tab locally
+    const updatedSheet: SavedPublicSheet = {
+      ...target,
+      gid: tab.gid,
+      activeTabName: tab.name,
+      syncStatus: 'syncing'
+    };
+    savePublicSheet(updatedSheet);
+    setSheets(getSavedPublicSheets());
+    showToast(`جاري التبديل إلى ورقة العمل "${tab.name}"...`);
+
     try {
-      const q = query(collection(db, 'cases'), where('isDeleted', '==', false), orderBy('createdAt', 'desc'));
-      const snap = await getDocs(q);
-      const items = snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseItem));
-      setExistingCases(items);
-    } catch (e) {
-      console.warn('Failed to load existing cases:', e);
+      const res = await fetchPublicGoogleSheet(target.url, tab.gid);
+      const refreshed: SavedPublicSheet = {
+        ...updatedSheet,
+        columns: res.columns,
+        rows: res.rows,
+        totalRows: res.totalRows,
+        lastSyncedAt: new Date().toISOString(),
+        syncStatus: 'success',
+        errorMessage: undefined
+      };
+      savePublicSheet(refreshed);
+      setSheets(getSavedPublicSheets());
+      showToast(`✓ تم تحميل بيانات ورقة "${tab.name}" (${res.totalRows} صف)`);
+    } catch (e: any) {
+      console.error('Switch tab error:', e);
+      const errSheet: SavedPublicSheet = {
+        ...updatedSheet,
+        syncStatus: 'error',
+        errorMessage: e.message || String(e)
+      };
+      savePublicSheet(errSheet);
+      setSheets(getSavedPublicSheets());
+      showToast(`✕ تعذر جلب بيانات ورقة "${tab.name}": ${e.message || e}`);
     }
   };
 
-  // Trigger Manual Sync
-  const handleSyncNow = async () => {
-    let token = googleAccessToken;
-    if (!token) {
-      try {
-        token = await authorizeGoogleWorkspace();
-      } catch (err: any) {
-        if (err?.code === 'auth/popup-closed-by-user' || err?.message?.includes('popup-closed-by-user')) {
-          return;
-        }
-        setSyncFeedback('يرجى تفويض حساب Google لبدء المزامنة.');
-        return;
+  // Discover Tabs for current sheet
+  const handleAutoDiscoverTabs = async () => {
+    if (!currentSheet || !currentSheet.sheetId) return;
+    setIsDiscoveringTabs(true);
+    showToast('جاري فحص واكتشاف كافة أوراق العمل في الملف...');
+
+    try {
+      const tabs = await discoverSheetTabs(currentSheet.sheetId);
+      if (tabs && tabs.length > 0) {
+        const existingGids = new Set((currentSheet.tabs || []).map(t => t.gid));
+        const combinedTabs = [...(currentSheet.tabs || [])];
+        
+        tabs.forEach(t => {
+          if (!existingGids.has(t.gid)) {
+            combinedTabs.push(t);
+          }
+        });
+
+        const updated: SavedPublicSheet = {
+          ...currentSheet,
+          tabs: combinedTabs
+        };
+        savePublicSheet(updated);
+        setSheets(getSavedPublicSheets());
+        showToast(`✓ تم اكتشاف ${tabs.length} ورقة عمل بنجاح!`);
+      } else {
+        showToast('لم يتم العثور على أوراق عمل إضافية عامة في هذا الرابط.');
+      }
+    } catch (e: any) {
+      showToast(`✕ تعذر فحص أوراق العمل: ${e.message || e}`);
+    } finally {
+      setIsDiscoveringTabs(false);
+    }
+  };
+
+  // Add Custom Tab
+  const handleAddCustomTab = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentSheet || !newTabName.trim()) return;
+
+    const gid = newTabGid.trim() || '0';
+    const newTab: SheetWorksheetTab = {
+      name: newTabName.trim(),
+      gid: gid
+    };
+
+    const existingTabs = currentSheet.tabs || [{ gid: currentSheet.gid || '0', name: currentSheet.activeTabName || 'الورقة الرئيسية', isDefault: true }];
+    const updatedTabs = [...existingTabs.filter(t => t.gid !== gid), newTab];
+
+    const updatedSheet: SavedPublicSheet = {
+      ...currentSheet,
+      tabs: updatedTabs
+    };
+
+    savePublicSheet(updatedSheet);
+    setSheets(getSavedPublicSheets());
+    setIsAddTabModalOpen(false);
+    setNewTabName('');
+    setNewTabGid('');
+
+    // Switch to it immediately
+    handleSwitchTab(currentSheet.id, newTab);
+  };
+
+  // Delete Tab / Worksheet
+  const handleDeleteTab = (tabGid: string, tabName: string) => {
+    if (!currentSheet) return;
+    const existingTabs = currentSheet.tabs || [{ gid: currentSheet.gid || '0', name: currentSheet.activeTabName || 'الورقة الرئيسية', isDefault: true }];
+    const remainingTabs = existingTabs.filter(t => !(t.gid === tabGid && t.name === tabName));
+    
+    // Fallback if user deletes the last tab
+    const fallbackTab = { gid: '0', name: 'الورقة 1', isDefault: true };
+    const finalTabs = remainingTabs.length > 0 ? remainingTabs : [fallbackTab];
+    const newActiveTab = finalTabs[0];
+
+    const isCurrentActive = (currentSheet.gid || '0') === tabGid;
+
+    const updatedSheet: SavedPublicSheet = {
+      ...currentSheet,
+      tabs: finalTabs,
+      gid: isCurrentActive ? newActiveTab.gid : currentSheet.gid,
+      activeTabName: isCurrentActive ? newActiveTab.name : currentSheet.activeTabName,
+      rows: isCurrentActive ? [] : currentSheet.rows,
+      totalRows: isCurrentActive ? 0 : currentSheet.totalRows
+    };
+
+    savePublicSheet(updatedSheet);
+    setSheets(getSavedPublicSheets());
+    showToast(`✓ تم حذف ورقة العمل "${tabName}"`);
+
+    if (isCurrentActive && remainingTabs.length > 0) {
+      handleSwitchTab(currentSheet.id, newActiveTab);
+    }
+  };
+
+  // Sync Single Sheet
+  const handleSyncSheet = async (sheet: SavedPublicSheet) => {
+    const updating: SavedPublicSheet = { ...sheet, syncStatus: 'syncing' };
+    savePublicSheet(updating);
+    setSheets(getSavedPublicSheets());
+
+    try {
+      const res = await fetchPublicGoogleSheet(sheet.url, sheet.gid || '0');
+      const synced: SavedPublicSheet = {
+        ...sheet,
+        columns: res.columns,
+        rows: res.rows,
+        totalRows: res.totalRows,
+        lastSyncedAt: new Date().toISOString(),
+        syncStatus: 'success',
+        errorMessage: undefined
+      };
+      savePublicSheet(synced);
+      setSheets(getSavedPublicSheets());
+      showToast(`✓ تم تحديث "${sheet.title}" (${res.totalRows} صف)`);
+    } catch (e: any) {
+      const errSheet: SavedPublicSheet = {
+        ...sheet,
+        syncStatus: 'error',
+        errorMessage: e.message || String(e)
+      };
+      savePublicSheet(errSheet);
+      setSheets(getSavedPublicSheets());
+      showToast(`✕ تعذر التحديث: ${e.message || e}`);
+    }
+  };
+
+  // Delete Sheet
+  const handleDeleteSheet = (id: string) => {
+    deletePublicSheet(id);
+    const remaining = getSavedPublicSheets();
+    setSheets(remaining);
+    if (selectedSheetId === id) {
+      if (remaining.length > 0) {
+        setSelectedSheetId(remaining[0].id);
+      } else {
+        setSelectedSheetId('');
+      }
+    }
+    showToast('✓ تم حذف الجدول من القائمة');
+  };
+
+  // Filtered Rows in Sheet
+  const filteredRows = useMemo(() => {
+    if (!currentSheet || !currentSheet.rows) return [];
+    let list = [...currentSheet.rows];
+
+    // Status Filter
+    if (statusFilter !== 'all') {
+      if (statusFilter === 'unlinked') {
+        list = list.filter(r => !r._linkedCaseId && !r._linkedClientId && !r._linkedTaskId);
+      } else if (statusFilter === 'case_linked') {
+        list = list.filter(r => !!r._linkedCaseId);
+      } else if (statusFilter === 'case_created') {
+        list = list.filter(r => r._systemStatus === 'case_created');
+      } else if (statusFilter === 'client_created') {
+        list = list.filter(r => !!r._linkedClientId);
+      } else if (statusFilter === 'task_created') {
+        list = list.filter(r => !!r._linkedTaskId);
+      } else if (statusFilter === 'has_files') {
+        list = list.filter(r => r._hasFiles || (r._fileUrls && r._fileUrls.length > 0));
       }
     }
 
-    if (!token) {
-      return;
+    // Search Query
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      list = list.filter(row => {
+        return Object.entries(row).some(([key, val]) => {
+          if (key.startsWith('_')) return false;
+          return String(val).toLowerCase().includes(q);
+        });
+      });
     }
 
-    if (!googleConfig) {
-      setSyncFeedback('يرجى تهيئة إعدادات Google Workspace أولاً من صفحة الإعدادات.');
-      return;
+    // Sorting
+    if (sortColumn) {
+      list.sort((a, b) => {
+        const valA = a[sortColumn] ?? '';
+        const valB = b[sortColumn] ?? '';
+        if (sortDirection === 'asc') {
+          return String(valA).localeCompare(String(valB), 'ar');
+        } else {
+          return String(valB).localeCompare(String(valA), 'ar');
+        }
+      });
     }
 
-    setIsSyncing(true);
-    setSyncFeedback(null);
+    return list;
+  }, [currentSheet, statusFilter, searchQuery, sortColumn, sortDirection]);
+
+  // Paginated Rows
+  const totalPages = Math.ceil(filteredRows.length / itemsPerPage) || 1;
+  const paginatedRows = useMemo(() => {
+    const start = (currentPage - 1) * itemsPerPage;
+    return filteredRows.slice(start, start + itemsPerPage);
+  }, [filteredRows, currentPage, itemsPerPage]);
+
+  // Test URL in Add Sheet Modal
+  const handleTestUrl = async () => {
+    if (!formUrl.trim()) return;
+    setIsTestingUrl(true);
+    setTestResult(null);
 
     try {
-      const log = await runFullGoogleSync(googleConfig, token, {
-        uid: userProfile?.uid || 'system',
-        name: userProfile?.displayName || 'المسؤول'
+      const res = await fetchPublicGoogleSheet(formUrl, formGid);
+      const info = extractSheetInfo(formUrl);
+      let discoveredTabs: SheetWorksheetTab[] = [];
+      if (info.sheetId) {
+        discoveredTabs = await discoverSheetTabs(info.sheetId);
+      }
+
+      setTestResult({
+        success: true,
+        message: `✓ تم الاتصال بنجاح! تم العثور على ${res.totalRows} صف و ${res.columns.length} عمود.`,
+        rowCount: res.totalRows,
+        columns: res.columns,
+        discoveredTabs: discoveredTabs.length > 0 ? discoveredTabs : undefined
       });
 
-      setSyncFeedback(`✓ اكتملت المزامنة: وجد ${log.recordsFound} طلب، تمت إضافة ${log.recordsCreated} جديد، وتخطي ${log.recordsSkipped} مكرر.`);
-    } catch (err: any) {
-      console.error('Manual sync error:', err);
-      setSyncFeedback(`✕ فشلت المزامنة: ${err.message || err}`);
+      if (!formTitle.trim()) {
+        setFormTitle(`استجابات نموذج Google (${new Date().toLocaleDateString('ar-EG')})`);
+      }
+    } catch (e: any) {
+      setTestResult({
+        success: false,
+        message: `✕ فشل الاتصال: ${e.message || e}`
+      });
     } finally {
-      setIsSyncing(false);
-      setTimeout(() => {
-        setSyncFeedback(null);
-      }, 7000);
+      setIsTestingUrl(false);
     }
   };
 
-  // Copy helper
-  const handleCopy = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
+  // Save New Sheet
+  const handleSaveNewSheet = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (importMode === 'paste') {
+      if (!pastedData.trim()) return;
+      const parsed = parseRawTableText(pastedData);
+      if (parsed.rows.length === 0) {
+        alert('تعذر استخراج بيانات من النص الملصق. يرجى التأكد من نسخه كجدول أو CSV.');
+        return;
+      }
+
+      const newSheet: SavedPublicSheet = {
+        id: `sheet_pasted_${Date.now()}`,
+        title: formTitle.trim() || 'جدول ملصق يدوياً',
+        description: formDescription.trim(),
+        url: '',
+        sheetId: '',
+        category: formCategory,
+        createdAt: new Date().toISOString(),
+        lastSyncedAt: new Date().toISOString(),
+        syncStatus: 'success',
+        columns: parsed.columns,
+        rows: parsed.rows,
+        totalRows: parsed.totalRows,
+        tabs: [{ gid: '0', name: 'البيانات الملصقة', isDefault: true }]
+      };
+
+      savePublicSheet(newSheet);
+      setSheets(getSavedPublicSheets());
+      setSelectedSheetId(newSheet.id);
+      setIsAddModalOpen(false);
+      setPastedData('');
+      showToast('✓ تم استيراد الجدول الملصق بنجاح');
+      return;
+    }
+
+    if (!formUrl.trim()) return;
+    const info = extractSheetInfo(formUrl);
+    if (!info.sheetId) {
+      alert('يرجى إدخال رابط Google Sheet صالح أو معرف الجدول.');
+      return;
+    }
+
+    const newSheet: SavedPublicSheet = {
+      id: `sheet_${info.sheetId}_${Date.now()}`,
+      title: formTitle.trim() || 'استجابات Google Sheet',
+      description: formDescription.trim(),
+      url: info.cleanUrl,
+      sheetId: info.sheetId,
+      gid: formGid || info.gid || '0',
+      category: formCategory,
+      createdAt: new Date().toISOString(),
+      syncStatus: 'idle',
+      columns: testResult?.columns || [],
+      rows: [],
+      totalRows: testResult?.rowCount || 0,
+      tabs: testResult?.discoveredTabs || [{ gid: formGid || '0', name: 'استجابات النموذج 1', isDefault: true }]
+    };
+
+    savePublicSheet(newSheet);
+    const updatedList = getSavedPublicSheets();
+    setSheets(updatedList);
+    setSelectedSheetId(newSheet.id);
+    setIsAddModalOpen(false);
+    setFormUrl('');
+    setFormTitle('');
+    setFormDescription('');
+    setTestResult(null);
+
+    // Initial Fetch
+    handleSyncSheet(newSheet);
+    showToast('✓ تمت إضافة الجدول إلى المفضلة');
   };
 
-  // ⚡ CONVERT TO CASE HANDLER
-  const handleOpenConvertModal = (req: ExternalRequest) => {
-    setSelectedReq(req);
-    // Auto populate suggestion
-    const suggested = req.suggestedCaseType || suggestCaseType(`${req.requestType} ${req.description}`);
-    setConvertCaseType(suggested || 'impersonation');
-    setConvertPlatform(req.platform || 'Instagram');
-    setShowConvertModal(true);
-  };
+  // ==========================================
+  // 3. SYSTEM INTEGRATION HANDLERS
+  // ==========================================
 
-  const handleExecuteConvert = async () => {
-    if (!selectedReq || !userProfile) return;
-    setIsConverting(true);
+  // Fast Create Case from Sheet Row
+  const handleCreateCaseFromRow = async (row: SheetRowItem) => {
+    if (!userProfile) return;
+    setIsConvertingAction(true);
 
     try {
-      // 1. Generate atomic sequential case number e.g. JB-2026-000142
+      const rowInfo = getRowDetails(row, currentSheet);
       const caseNumber = await generateNextCaseNumber();
-      
-      // 2. Create Drive Folder if option selected and token available
-      let driveFolderInfo: { caseFolderId?: string; folderUrl?: string } = {};
-      if (convertCreateDriveFolder && googleAccessToken && googleConfig?.driveCasesFolderId) {
-        try {
-          const driveRes = await createCaseDriveFolder(
-            caseNumber, 
-            googleConfig.driveCasesFolderId, 
-            googleAccessToken
-          );
-          driveFolderInfo = {
-            caseFolderId: driveRes.caseFolderId,
-            folderUrl: driveRes.folderUrl
-          };
-        } catch (driveErr) {
-          console.warn('Drive folder creation skipped/failed:', driveErr);
-        }
-      }
 
-      // 3. Client profile lookup / linking
-      let clientId = '';
-      const clientPhone = selectedReq.phone?.trim() || selectedReq.whatsapp?.trim() || '';
-      const clientEmail = selectedReq.email?.trim().toLowerCase() || '';
-      const clientName = selectedReq.clientName.trim();
+      // Detect Platform & Type
+      const rowText = Object.values(row).filter(v => typeof v === 'string').join(' ');
+      const detectedPlatformName = detectPlatform(rowText) || 'Instagram';
+      const detectedType = suggestCaseType(rowText) || 'general';
 
-      if (clientPhone || clientEmail || clientName) {
-        try {
-          let matchedClientDoc: any = null;
-          if (clientPhone) {
-            const qPhone = query(collection(db, 'clients'), where('phone', '==', clientPhone), limit(1));
-            const phoneSnap = await getDocs(qPhone);
-            if (!phoneSnap.empty) matchedClientDoc = phoneSnap.docs[0];
-          }
-          if (!matchedClientDoc && clientEmail) {
-            const qEmail = query(collection(db, 'clients'), where('email', '==', clientEmail), limit(1));
-            const emailSnap = await getDocs(qEmail);
-            if (!emailSnap.empty) matchedClientDoc = emailSnap.docs[0];
-          }
-          if (!matchedClientDoc && clientName) {
-            const qName = query(collection(db, 'clients'), where('name', '==', clientName), limit(1));
-            const nameSnap = await getDocs(qName);
-            if (!nameSnap.empty) matchedClientDoc = nameSnap.docs[0];
-          }
+      const title = rowInfo.clientName 
+        ? `طلب استجابة — ${rowInfo.clientName}` 
+        : `طلب استجابة نموذج (${caseNumber})`;
 
-          if (matchedClientDoc) {
-            clientId = matchedClientDoc.id;
-          }
-        } catch (clientErr) {
-          console.warn('Client profile search notice:', clientErr);
-        }
-      }
-
-      // 3.1 Create Case in Firestore
+      // Create Case in Firestore
       const newCaseData: Omit<CaseItem, 'id'> = {
         caseNumber,
-        externalNumber: selectedReq.requestId,
-        title: `${selectedReq.requestType} — ${selectedReq.clientName}`,
-        caseType: convertCaseType,
-        platform: convertPlatform,
+        title,
+        caseType: detectedType,
+        platform: detectedPlatformName,
         status: 'new',
-        priority: convertPriority,
+        priority: 'medium',
         client: {
-          clientId: clientId || '',
-          name: selectedReq.clientName,
-          phone: selectedReq.phone || '',
-          whatsapp: selectedReq.whatsapp || selectedReq.phone || '',
-          email: selectedReq.email || '',
+          clientId: '',
+          name: rowInfo.clientName || 'عميل وارد من النموذج',
+          phone: rowInfo.phone || '',
+          whatsapp: rowInfo.phone || '',
+          email: rowInfo.email || ''
         },
-        description: selectedReq.description || '',
-        notes: selectedReq.notes ? `[ملاحظات الطلب الخارجي]: ${selectedReq.notes}` : '',
+        description: rowInfo.notesSummary || 'طلب وارد عبر استجابات Google Sheets',
+        notes: `[المصدر: Google Sheets ${currentSheet?.title || ''}]:\n${rowInfo.notesSummary}`,
         typeSpecificData: {
-          accountUrl: selectedReq.accountUrl || '',
-          postUrl: selectedReq.postUrl || '',
-          extractedLinks: extractUrls(`${selectedReq.description} ${selectedReq.notes}`),
-          source: selectedReq.source,
-          sourceLabel: selectedReq.sourceLabel,
-          externalRequestId: selectedReq.requestId,
-          driveFolderUrl: driveFolderInfo.folderUrl || ''
+          source: 'google_sheets_public',
+          sourceLabel: currentSheet?.title || 'Google Sheet',
+          extractedLinks: rowInfo.allUrls
         },
         isDeleted: false,
         createdAt: serverTimestamp(),
@@ -327,107 +665,69 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
         }
       };
 
-      const caseDocRef = await addDoc(collection(db, 'cases'), cleanFirestoreData(newCaseData));
-      const newCaseId = caseDocRef.id;
-
-      // Update / create client record with newCaseId
+      let newCaseId = `case_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       try {
-        if (clientId) {
-          const clientSnap = await getDoc(doc(db, 'clients', clientId));
-          if (clientSnap.exists()) {
-            const curCaseIds: string[] = clientSnap.data().caseIds || [];
-            if (!curCaseIds.includes(newCaseId)) {
-              await updateDoc(doc(db, 'clients', clientId), {
-                caseIds: [...curCaseIds, newCaseId],
-                totalCasesCount: (clientSnap.data().totalCasesCount || 0) + 1,
-                updatedAt: serverTimestamp()
-              });
-            }
-          }
-        } else if (clientName) {
-          const createdClientRef = await addDoc(collection(db, 'clients'), cleanFirestoreData({
-            name: clientName,
-            phone: clientPhone,
-            whatsapp: selectedReq.whatsapp || clientPhone,
-            email: clientEmail,
-            caseIds: [newCaseId],
-            totalCasesCount: 1,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-            createdBy: {
-              uid: userProfile.uid,
-              name: userProfile.displayName
-            }
-          }));
-          await updateDoc(doc(db, 'cases', newCaseId), {
-            'client.clientId': createdClientRef.id
-          });
-        }
-      } catch (cErr) {
-        console.warn('Client caseIds sync notice:', cErr);
+        const caseRef = await addDoc(collection(db, 'cases'), cleanFirestoreData(newCaseData));
+        newCaseId = caseRef.id;
+      } catch (dbErr) {
+        console.warn('Firestore write offline, saving case locally:', dbErr);
       }
 
-      // 3.2. Save Drive Attachments directly into caseAttachments collection for instant access
-      if (selectedReq.driveAttachments && selectedReq.driveAttachments.length > 0) {
-        for (const att of selectedReq.driveAttachments) {
+      saveLocalCase({
+        id: newCaseId,
+        ...newCaseData,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      // Update row in current sheet
+      if (currentSheet) {
+        const updatedRows = currentSheet.rows.map(r => {
+          if (r._rowId === row._rowId) {
+            return {
+              ...r,
+              _linkedCaseId: newCaseId,
+              _linkedCaseNumber: caseNumber,
+              _systemStatus: 'case_created' as const
+            };
+          }
+          return r;
+        });
+
+        const updatedSheet = { ...currentSheet, rows: updatedRows };
+        savePublicSheet(updatedSheet);
+        setSheets(getSavedPublicSheets());
+      }
+
+      // Add to Case Attachments if files exist
+      if (rowInfo.fileLinks.length > 0) {
+        for (const fUrl of rowInfo.fileLinks) {
           try {
             await addDoc(collection(db, 'caseAttachments'), cleanFirestoreData({
               caseId: newCaseId,
               caseNumber: caseNumber,
-              fileName: att.fileName || 'مستند مرفق من الطلب الخارجي',
-              fileType: att.fileType || 'application/pdf',
-              fileSize: att.fileSize || 0,
-              downloadUrl: att.url,
-              dataUrl: att.url,
+              fileName: 'مستند مرفق من استجابة النموذج',
+              fileType: 'application/pdf',
+              downloadUrl: fUrl,
+              dataUrl: fUrl,
               syncStatus: 'synced',
-              driveFileId: att.fileId || '',
               uploadedBy: {
                 uid: userProfile.uid,
-                name: selectedReq.clientName || 'العميل (عبر النموذج/الموقع)'
+                name: rowInfo.clientName || 'النموذج الخارجي'
               },
-              notes: `تم استيراده تلقائياً من الطلب الخارجي ${selectedReq.requestId}`,
+              notes: `تم استيراده من Google Sheets`,
               createdAt: serverTimestamp()
             }));
           } catch (attErr) {
-            console.warn('Failed to save attachment to caseAttachments:', attErr);
+            console.warn('Attachment save notice:', attErr);
           }
         }
       }
 
-      // 4. Update External Request Doc (Permanent 2-way Link)
-      await updateDoc(doc(db, 'externalRequests', selectedReq.id), cleanFirestoreData({
-        status: 'converted_to_case',
-        linkedCaseId: newCaseId,
-        linkedCaseNumber: caseNumber,
-        processedAt: serverTimestamp(),
-        processedBy: {
-          uid: userProfile.uid,
-          name: userProfile.displayName || 'المسؤول'
-        },
-        updatedAt: serverTimestamp()
-      }));
-
-      // 5. Add Case Event / Timeline item
-      await addDoc(collection(db, 'caseEvents'), cleanFirestoreData({
-        caseId: newCaseId,
-        action: 'CONVERTED_FROM_EXTERNAL_REQUEST',
-        title: `تحويل الطلب الخارجي إلى قضية رسمية`,
-        description: `تم إنشاء القضية ${caseNumber} بناءً على الطلب الخارجي ${selectedReq.requestId} (${selectedReq.sourceLabel || selectedReq.source})`,
-        performedBy: {
-          uid: userProfile.uid,
-          name: userProfile.displayName || 'المسؤول'
-        },
-        timestamp: serverTimestamp(),
-        metadata: {
-          externalRequestId: selectedReq.requestId,
-          source: selectedReq.source
-        }
-      }));
-
-      // 6. Log Audit
+      // Log Audit
       await logAuditAndEvent({
-        action: 'CONVERT_EXTERNAL_REQUEST',
-        details: `تحويل الطلب الخارجي ${selectedReq.requestId} إلى القضية ${caseNumber}`,
+        action: 'CREATE_CASE_FROM_SHEET',
+        details: `إنشاء القضية ${caseNumber} من استجابة Google Sheets`,
         entityType: 'case',
         entityId: newCaseId,
         entityTitle: caseNumber,
@@ -435,1339 +735,1192 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
         user: userProfile
       });
 
-      setShowConvertModal(false);
-      setSelectedReq(null);
+      showToast(`✓ تم إنشاء القضية ${caseNumber} بنجاح!`);
 
-      // Open newly created case directly if callback provided
       if (onSelectCase) {
         onSelectCase(newCaseId);
       }
     } catch (e: any) {
-      console.error('Error converting request to case:', e);
-      alert(`حدث خطأ أثناء تحويل الطلب: ${e.message || e}`);
+      console.error('Error creating case:', e);
+      alert(`خطأ: ${e.message || e}`);
     } finally {
-      setIsConverting(false);
+      setIsConvertingAction(false);
+      setInspectingRow(null);
     }
   };
 
-  // 🔗 LINK TO EXISTING CASE HANDLER
-  const handleOpenLinkModal = (req: ExternalRequest) => {
-    setSelectedReq(req);
-    loadExistingCases();
-    setShowLinkModal(true);
-  };
-
-  const handleExecuteLink = async () => {
-    if (!selectedReq || !selectedExistingCaseId || !userProfile) return;
-    setIsLinking(true);
+  // Fast Create Client from Sheet Row
+  const handleCreateClientFromRow = async (row: SheetRowItem) => {
+    if (!userProfile) return;
+    const rowInfo = getRowDetails(row, currentSheet);
+    const clientName = rowInfo.clientName || prompt('يرجى تأكيد اسم الموكل:');
+    if (!clientName) return;
 
     try {
-      const caseToLink = existingCases.find(c => c.id === selectedExistingCaseId);
-      if (!caseToLink) throw new Error('القضية غير موجودة');
-
-      // 1. Update Request
-      await updateDoc(doc(db, 'externalRequests', selectedReq.id), cleanFirestoreData({
-        status: 'linked_to_case',
-        linkedCaseId: caseToLink.id,
-        linkedCaseNumber: caseToLink.caseNumber,
-        processedAt: serverTimestamp(),
-        processedBy: {
+      const clientRef = await addDoc(collection(db, 'clients'), cleanFirestoreData({
+        name: clientName,
+        phone: rowInfo.phone || '',
+        whatsapp: rowInfo.phone || '',
+        email: rowInfo.email || '',
+        notes: `تم التسجيل من استجابة Google Sheet: ${currentSheet?.title || ''}`,
+        caseIds: [],
+        totalCasesCount: 0,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        createdBy: {
           uid: userProfile.uid,
-          name: userProfile.displayName || 'المسؤول'
-        },
-        updatedAt: serverTimestamp()
+          name: userProfile.displayName
+        }
       }));
 
-      // 2. Add Timeline event in linked case
+      // Update row in current sheet
+      if (currentSheet) {
+        const updatedRows = currentSheet.rows.map(r => {
+          if (r._rowId === row._rowId) {
+            return {
+              ...r,
+              _linkedClientId: clientRef.id,
+              _linkedClientName: clientName,
+              _systemStatus: 'client_created' as const
+            };
+          }
+          return r;
+        });
+
+        const updatedSheet = { ...currentSheet, rows: updatedRows };
+        savePublicSheet(updatedSheet);
+        setSheets(getSavedPublicSheets());
+      }
+
+      showToast(`✓ تم إضافة الموكل "${clientName}" بنجاح!`);
+    } catch (e: any) {
+      alert(`خطأ: ${e.message || e}`);
+    }
+  };
+
+  // Fast Create Task from Sheet Row
+  const handleCreateTaskFromRow = async (row: SheetRowItem) => {
+    if (!userProfile) return;
+    const rowInfo = getRowDetails(row, currentSheet);
+    const taskTitle = prompt('عنوان المهمة:', `متابعة استجابة: ${rowInfo.clientName || 'عميل جديد'}`);
+    if (!taskTitle) return;
+
+    try {
+      const taskRef = await addDoc(collection(db, 'tasks'), cleanFirestoreData({
+        title: taskTitle,
+        description: `متابعة البيانات الواردة:\n${rowInfo.notesSummary}`,
+        status: 'pending',
+        priority: 'high',
+        dueDate: new Date(Date.now() + 86400000 * 2).toISOString().split('T')[0],
+        assignedTo: {
+          uid: userProfile.uid,
+          name: userProfile.displayName
+        },
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        createdBy: {
+          uid: userProfile.uid,
+          name: userProfile.displayName
+        }
+      }));
+
+      if (currentSheet) {
+        const updatedRows = currentSheet.rows.map(r => {
+          if (r._rowId === row._rowId) {
+            return {
+              ...r,
+              _linkedTaskId: taskRef.id,
+              _linkedTaskTitle: taskTitle,
+              _systemStatus: 'task_created' as const
+            };
+          }
+          return r;
+        });
+
+        const updatedSheet = { ...currentSheet, rows: updatedRows };
+        savePublicSheet(updatedSheet);
+        setSheets(getSavedPublicSheets());
+      }
+
+      showToast(`✓ تم تعيين المهمة "${taskTitle}" بنجاح!`);
+    } catch (e: any) {
+      alert(`خطأ: ${e.message || e}`);
+    }
+  };
+
+  // Link Row to Existing Case
+  const handleLinkRowToExistingCase = async (caseItem: CaseItem) => {
+    if (!linkingRow || !userProfile || !currentSheet) return;
+
+    try {
+      const rowInfo = getRowDetails(linkingRow, currentSheet);
+
+      // Add timeline event to case
       await addDoc(collection(db, 'caseEvents'), cleanFirestoreData({
-        caseId: caseToLink.id,
-        action: 'EXTERNAL_REQUEST_LINKED',
-        title: `ربط طلب خارجي بالقضية`,
-        description: `تم ربط الطلب الخارجي ${selectedReq.requestId} (${selectedReq.clientName}) بهذه القضية.`,
+        caseId: caseItem.id,
+        action: 'SHEET_RESPONSE_LINKED',
+        title: `ربط استجابة نموذج بالقضية`,
+        description: `تم إلحاق استجابة من Google Sheet (${currentSheet.title}) بسجل القضية.`,
         performedBy: {
           uid: userProfile.uid,
-          name: userProfile.displayName || 'المسؤول'
+          name: userProfile.displayName
         },
         timestamp: serverTimestamp(),
         metadata: {
-          externalRequestId: selectedReq.requestId,
-          source: selectedReq.source
+          sheetTitle: currentSheet.title,
+          rowId: linkingRow._rowId
         }
       }));
 
-      // 3. Save Drive Attachments directly into caseAttachments for the linked case
-      if (selectedReq.driveAttachments && selectedReq.driveAttachments.length > 0) {
-        for (const att of selectedReq.driveAttachments) {
+      // Attach drive files if available
+      if (rowInfo.fileLinks.length > 0) {
+        for (const fUrl of rowInfo.fileLinks) {
           try {
             await addDoc(collection(db, 'caseAttachments'), cleanFirestoreData({
-              caseId: caseToLink.id,
-              caseNumber: caseToLink.caseNumber,
-              fileName: att.fileName || 'مستند مرفق من الطلب الخارجي',
-              fileType: att.fileType || 'application/pdf',
-              fileSize: att.fileSize || 0,
-              downloadUrl: att.url,
-              dataUrl: att.url,
+              caseId: caseItem.id,
+              caseNumber: caseItem.caseNumber,
+              fileName: 'مستند مرفق من Google Sheet',
+              fileType: 'application/pdf',
+              downloadUrl: fUrl,
+              dataUrl: fUrl,
               syncStatus: 'synced',
-              driveFileId: att.fileId || '',
               uploadedBy: {
                 uid: userProfile.uid,
-                name: selectedReq.clientName || 'العميل (عبر النموذج/الموقع)'
+                name: rowInfo.clientName || 'النموذج الخارجي'
               },
-              notes: `تم ربطه تلقائياً من الطلب الخارجي ${selectedReq.requestId}`,
+              notes: `تم ربطه من الشيت ${currentSheet.title}`,
               createdAt: serverTimestamp()
             }));
           } catch (attErr) {
-            console.warn('Failed to link attachment to caseAttachments:', attErr);
+            console.warn('Attachment linking notice:', attErr);
           }
         }
       }
 
-      // 4. Update Client record's caseIds if applicable
-      try {
-        const clientPhone = selectedReq.phone?.trim() || selectedReq.whatsapp?.trim() || '';
-        const clientEmail = selectedReq.email?.trim().toLowerCase() || '';
-        const clientName = selectedReq.clientName.trim();
-
-        let matchedClientDoc: any = null;
-        if (clientPhone) {
-          const qPhone = query(collection(db, 'clients'), where('phone', '==', clientPhone), limit(1));
-          const phoneSnap = await getDocs(qPhone);
-          if (!phoneSnap.empty) matchedClientDoc = phoneSnap.docs[0];
+      // Update row in current sheet
+      const updatedRows = currentSheet.rows.map(r => {
+        if (r._rowId === linkingRow._rowId) {
+          return {
+            ...r,
+            _linkedCaseId: caseItem.id,
+            _linkedCaseNumber: caseItem.caseNumber,
+            _systemStatus: 'case_linked' as const
+          };
         }
-        if (!matchedClientDoc && clientEmail) {
-          const qEmail = query(collection(db, 'clients'), where('email', '==', clientEmail), limit(1));
-          const emailSnap = await getDocs(qEmail);
-          if (!emailSnap.empty) matchedClientDoc = emailSnap.docs[0];
-        }
-        if (!matchedClientDoc && clientName) {
-          const qName = query(collection(db, 'clients'), where('name', '==', clientName), limit(1));
-          const nameSnap = await getDocs(qName);
-          if (!nameSnap.empty) matchedClientDoc = nameSnap.docs[0];
-        }
-
-        if (matchedClientDoc) {
-          const curCaseIds: string[] = matchedClientDoc.data().caseIds || [];
-          if (!curCaseIds.includes(caseToLink.id)) {
-            await updateDoc(doc(db, 'clients', matchedClientDoc.id), {
-              caseIds: [...curCaseIds, caseToLink.id],
-              totalCasesCount: (matchedClientDoc.data().totalCasesCount || 0) + 1,
-              updatedAt: serverTimestamp()
-            });
-          }
-        }
-      } catch (cErr) {
-        console.warn('Client caseIds linking notice:', cErr);
-      }
-
-      // 5. Log Audit
-      await logAuditAndEvent({
-        action: 'LINK_EXTERNAL_REQUEST',
-        details: `ربط الطلب الخارجي ${selectedReq.requestId} بالقضية ${caseToLink.caseNumber}`,
-        entityType: 'case',
-        entityId: caseToLink.id,
-        entityTitle: caseToLink.caseNumber,
-        caseId: caseToLink.id,
-        user: userProfile
+        return r;
       });
 
-      setShowLinkModal(false);
-      setSelectedReq(null);
+      const updatedSheet = { ...currentSheet, rows: updatedRows };
+      savePublicSheet(updatedSheet);
+      setSheets(getSavedPublicSheets());
+
+      showToast(`✓ تم ربط الاستجابة بالقضية ${caseItem.caseNumber} بنجاح!`);
+      setIsLinkToCaseModalOpen(false);
+      setLinkingRow(null);
     } catch (e: any) {
-      console.error('Error linking request:', e);
-      alert(`حدث خطأ أثناء الربط: ${e.message || e}`);
-    } finally {
-      setIsLinking(false);
+      alert(`خطأ: ${e.message || e}`);
     }
   };
 
-  // Status Change Handler
-  const handleUpdateStatus = async (reqId: string, newStatus: ExternalRequestStatus) => {
-    if (!userProfile) return;
-    try {
-      await updateDoc(doc(db, 'externalRequests', reqId), {
-        status: newStatus,
-        updatedAt: serverTimestamp()
-      });
-
-      await logAuditAndEvent({
-        action: 'UPDATE_REQUEST_STATUS',
-        details: `تعديل حالة الطلب الخارجي ${reqId} إلى: ${newStatus}`,
-        entityType: 'external_request',
-        entityId: reqId,
-        user: userProfile
-      });
-
-      if (selectedReq && selectedReq.id === reqId) {
-        setSelectedReq(prev => prev ? { ...prev, status: newStatus } : null);
-      }
-    } catch (e) {
-      console.error('Error updating status:', e);
-    }
+  // Copy text helper
+  const handleCopy = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
   };
 
-  // Manual Request Creation
+  // Handle Manual Request Submission
   const handleCreateManualRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!manualName.trim() || !userProfile) return;
 
     try {
-      const countSnap = await getDocs(collection(db, 'externalRequests'));
-      const reqIndexStr = String(countSnap.size + 1).padStart(5, '0');
-      const requestId = `EXT-${new Date().getFullYear()}-${reqIndexStr}`;
-
-      const suggestedType = suggestCaseType(`${manualType} ${manualDescription}`);
-      const detectedPlat = manualPlatform || detectPlatform(manualDescription, manualAccountUrl || manualPostUrl);
-
-      const newExtReq: Partial<ExternalRequest> = {
-        requestId,
-        source: 'manual',
-        sourceLabel: 'إدخال يدوي داخلي',
+      const reqId = `REQ-${Date.now().toString().slice(-6)}`;
+      await addDoc(collection(db, 'externalRequests'), cleanFirestoreData({
+        requestId: reqId,
         clientName: manualName.trim(),
         phone: manualPhone.trim(),
+        whatsapp: manualPhone.trim(),
         email: manualEmail.trim(),
-        requestType: manualType.trim(),
-        suggestedCaseType: suggestedType,
-        platform: detectedPlat,
+        requestType: manualType,
+        platform: manualPlatform,
         accountUrl: manualAccountUrl.trim(),
         postUrl: manualPostUrl.trim(),
         description: manualDescription.trim(),
         notes: manualNotes.trim(),
+        source: 'manual_entry',
+        sourceLabel: 'إدخال يدوي مباشر',
         status: 'new',
         createdAt: serverTimestamp(),
-        receivedAt: new Date(),
         updatedAt: serverTimestamp(),
-        processedBy: {
+        createdBy: {
           uid: userProfile.uid,
-          name: userProfile.displayName || 'المسؤول'
+          name: userProfile.displayName
         }
-      };
+      }));
 
-      await addDoc(collection(db, 'externalRequests'), cleanFirestoreData(newExtReq));
-
-      await logAuditAndEvent({
-        action: 'CREATE_MANUAL_REQUEST',
-        details: `إضافة طلب خارجي يدوياً: ${requestId} (${manualName})`,
-        entityType: 'external_request',
-        entityTitle: requestId,
-        user: userProfile
-      });
-
+      setShowManualModal(false);
       setManualName('');
       setManualPhone('');
       setManualEmail('');
       setManualDescription('');
-      setManualNotes('');
       setManualAccountUrl('');
-      setManualPostUrl('');
-      setShowManualModal(false);
-    } catch (e) {
-      console.error('Error creating manual request:', e);
-    }
-  };
-
-  // Filter requests
-  const filteredRequests = requests.filter(req => {
-    // Source filter
-    if (sourceFilter !== 'all' && req.source !== sourceFilter) return false;
-
-    // Status filter
-    if (activeTab === 'new' && req.status !== 'new') return false;
-    if (activeTab === 'under_review' && req.status !== 'under_review') return false;
-    if (activeTab === 'converted' && req.status !== 'converted_to_case') return false;
-    if (activeTab === 'linked' && req.status !== 'linked_to_case') return false;
-    if (activeTab === 'waiting' && req.status !== 'waiting_for_info') return false;
-    if (activeTab === 'rejected' && req.status !== 'rejected') return false;
-    if (activeTab === 'completed' && req.status !== 'completed') return false;
-
-    // Search query
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase().trim();
-      const matchId = req.requestId.toLowerCase().includes(q);
-      const matchName = req.clientName.toLowerCase().includes(q);
-      const matchPhone = (req.phone || '').includes(q);
-      const matchType = req.requestType.toLowerCase().includes(q);
-      const matchDesc = (req.description || '').toLowerCase().includes(q);
-      const matchCase = (req.linkedCaseNumber || '').toLowerCase().includes(q);
-      if (!matchId && !matchName && !matchPhone && !matchType && !matchDesc && !matchCase) {
-        return false;
-      }
-    }
-
-    return true;
-  });
-
-  // Counters
-  const countAll = requests.length;
-  const countNew = requests.filter(r => r.status === 'new').length;
-  const countReview = requests.filter(r => r.status === 'under_review').length;
-  const countConverted = requests.filter(r => r.status === 'converted_to_case').length;
-  const countLinked = requests.filter(r => r.status === 'linked_to_case').length;
-  const countSite = requests.filter(r => r.source === 'website_sheet').length;
-  const countForm = requests.filter(r => r.source === 'google_form').length;
-
-  const getSourceBadge = (source: ExternalRequestSource, label?: string) => {
-    switch (source) {
-      case 'website_sheet':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-            <Globe className="w-3.5 h-3.5" />
-            <span>طلبات الموقع</span>
-          </span>
-        );
-      case 'google_form':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-            <FileText className="w-3.5 h-3.5" />
-            <span>Google Form</span>
-          </span>
-        );
-      case 'manual':
-      case 'internal':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-            <User className="w-3.5 h-3.5" />
-            <span>إدخال يدوي</span>
-          </span>
-        );
-      default:
-        return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-zinc-800 text-zinc-300">
-            <span>{label || source}</span>
-          </span>
-        );
-    }
-  };
-
-  const getStatusBadge = (status: ExternalRequestStatus) => {
-    switch (status) {
-      case 'new':
-        return (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold bg-sky-500/10 text-sky-400 border border-sky-500/30">
-            <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
-            <span>جديد</span>
-          </span>
-        );
-      case 'under_review':
-        return (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
-            <Clock className="w-3 h-3" />
-            <span>قيد المراجعة</span>
-          </span>
-        );
-      case 'converted_to_case':
-        return (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-            <CheckCircle className="w-3 h-3" />
-            <span>تم تحويلها لقضية</span>
-          </span>
-        );
-      case 'linked_to_case':
-        return (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-            <LinkIcon className="w-3 h-3" />
-            <span>مرتبطة بقضية</span>
-          </span>
-        );
-      case 'waiting_for_info':
-        return (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-orange-500/10 text-orange-400 border border-orange-500/20">
-            <span>بحاجة لمعلومات</span>
-          </span>
-        );
-      case 'rejected':
-        return (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20">
-            <XCircle className="w-3 h-3" />
-            <span>مرفوض</span>
-          </span>
-        );
-      case 'duplicate':
-        return (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-zinc-800 text-zinc-400 border border-zinc-700">
-            <span>مكرر</span>
-          </span>
-        );
-      case 'completed':
-        return (
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-teal-500/10 text-teal-400 border border-teal-500/20">
-            <Check className="w-3 h-3" />
-            <span>مكتمل</span>
-          </span>
-        );
-      default:
-        return <span className="text-xs text-zinc-400">{status}</span>;
+      showToast(`✓ تم تسجيل الطلب الخارجي (${reqId}) بنجاح!`);
+    } catch (e: any) {
+      alert(`خطأ: ${e.message || e}`);
     }
   };
 
   return (
     <div className="space-y-6">
       
-      {/* Top Header Card */}
-      <div className="bg-[#121214] border border-[#27272A] rounded-xl p-6 shadow-sm">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-          
-          <div className="space-y-1">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-indigo-600/10 text-indigo-400 border border-indigo-500/20 flex items-center justify-center font-bold">
-                <Inbox className="w-5 h-5" />
-              </div>
-              <div>
-                <h1 className="text-xl font-bold text-white tracking-tight flex items-center gap-2">
-                  <span>الطلبات الخارجية</span>
-                  <span className="text-xs font-mono text-zinc-400 bg-zinc-800/80 px-2 py-0.5 rounded-full">
-                    External Requests
-                  </span>
-                </h1>
-                <p className="text-xs text-zinc-400">
-                  تجميع ومزامنة طلبات واستمارات الموقع وGoogle Forms وGoogle Sheets وتحويلها لقضايا رسمية في JB Work
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Sync & Action Buttons */}
-          <div className="flex flex-wrap items-center gap-2.5">
-            {/* Sync Now Button */}
-            <button
-              onClick={handleSyncNow}
-              disabled={isSyncing}
-              className="px-4 py-2.5 rounded-lg bg-[#18181B] hover:bg-zinc-800 border border-[#27272A] hover:border-zinc-700 text-xs font-semibold text-white flex items-center gap-2 transition-all cursor-pointer disabled:opacity-50"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 text-indigo-400 ${isSyncing ? 'animate-spin' : ''}`} />
-              <span>{isSyncing ? 'جارٍ المزامنة الآن...' : 'مزامنة الآن (Sync Now)'}</span>
-            </button>
-
-            {/* Manual Request Button */}
-            <button
-              onClick={() => setShowManualModal(true)}
-              className="px-4 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white flex items-center gap-2 shadow-sm transition-colors cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>+ إضافة طلب يدوي</span>
-            </button>
-          </div>
-
-        </div>
-
-        {/* Sync Feedback Toast / Banner */}
-        {syncFeedback && (
-          <div className={`mt-4 p-3 rounded-lg text-xs font-medium border flex items-center justify-between ${
-            syncFeedback.startsWith('✓') 
-              ? 'bg-emerald-950/30 text-emerald-300 border-emerald-800/40' 
-              : 'bg-rose-950/30 text-rose-300 border-rose-800/40'
-          }`}>
-            <span>{syncFeedback}</span>
-            <button onClick={() => setSyncFeedback(null)} className="text-zinc-400 hover:text-white">
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        )}
-
-        {/* Integration Status Bar */}
-        <div className="mt-6 pt-4 border-t border-[#27272A] flex flex-wrap items-center justify-between gap-4 text-xs text-zinc-400">
-          <div className="flex flex-wrap items-center gap-4">
-            <div className="flex items-center gap-1.5">
-              <span className={`w-2 h-2 rounded-full ${googleAccessToken ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`} />
-              <span>حساب Google:</span>
-              <span className="text-white font-medium">
-                {googleAccessToken ? 'متصل ومفوض ✓' : 'يحتاج تفويض (اضغط مزامنة)'}
-              </span>
-            </div>
-
-            {googleConfig?.websiteSpreadsheetId && (
-              <div className="flex items-center gap-1.5">
-                <Globe className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Sheet الموقع:</span>
-                <span className="text-white font-mono">{googleConfig.websiteSheetName || 'متصل'}</span>
-              </div>
-            )}
-
-            {googleConfig?.externalFormId && (
-              <div className="flex items-center gap-1.5">
-                <FileText className="w-3.5 h-3.5 text-indigo-400" />
-                <span>Google Form:</span>
-                <span className="text-white font-medium">مفعل</span>
-              </div>
-            )}
-
-            {googleConfig?.lastSyncTime && (
-              <div className="flex items-center gap-1.5">
-                <Clock className="w-3.5 h-3.5 text-zinc-400" />
-                <span>آخر مزامنة:</span>
-                <span className="text-zinc-300">{new Date(googleConfig.lastSyncTime).toLocaleTimeString('ar-LB')}</span>
-              </div>
-            )}
-          </div>
-
-          {onNavigateToSettings && (
-            <button
-              onClick={onNavigateToSettings}
-              className="text-xs text-indigo-400 hover:text-indigo-300 underline font-medium flex items-center gap-1 cursor-pointer"
-            >
-              <span>إدارة تكامل Google Workspace</span>
-              <ArrowRight className="w-3 h-3" />
-            </button>
-          )}
-        </div>
-
-      </div>
-
-      {/* Stats Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <div className="bg-[#121214] border border-[#27272A] rounded-xl p-4">
-          <div className="flex items-center justify-between text-zinc-400 text-xs font-medium">
-            <span>كل الطلبات</span>
-            <Inbox className="w-4 h-4 text-indigo-400" />
-          </div>
-          <div className="mt-2 text-2xl font-bold text-white font-mono">{countAll}</div>
-        </div>
-
-        <div className="bg-[#121214] border border-[#27272A] rounded-xl p-4">
-          <div className="flex items-center justify-between text-zinc-400 text-xs font-medium">
-            <span>طلبات جديدة</span>
-            <span className="w-2 h-2 rounded-full bg-sky-400 animate-ping" />
-          </div>
-          <div className="mt-2 text-2xl font-bold text-sky-400 font-mono">{countNew}</div>
-        </div>
-
-        <div className="bg-[#121214] border border-[#27272A] rounded-xl p-4">
-          <div className="flex items-center justify-between text-zinc-400 text-xs font-medium">
-            <span>طلبات الموقع</span>
-            <Globe className="w-4 h-4 text-emerald-400" />
-          </div>
-          <div className="mt-2 text-2xl font-bold text-emerald-400 font-mono">{countSite}</div>
-        </div>
-
-        <div className="bg-[#121214] border border-[#27272A] rounded-xl p-4">
-          <div className="flex items-center justify-between text-zinc-400 text-xs font-medium">
-            <span>تم تحويلها لقضايا</span>
-            <CheckCircle className="w-4 h-4 text-emerald-400" />
-          </div>
-          <div className="mt-2 text-2xl font-bold text-emerald-400 font-mono">{countConverted}</div>
-        </div>
-      </div>
-
-      {/* Filter and Search Bar */}
-      <div className="bg-[#121214] border border-[#27272A] rounded-xl p-4 space-y-4">
-        
-        {/* Source Tabs */}
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#27272A] pb-3">
-          <div className="flex items-center gap-1 bg-[#18181B] p-1 rounded-lg border border-[#27272A]">
-            <button
-              onClick={() => setSourceFilter('all')}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                sourceFilter === 'all' ? 'bg-indigo-600 text-white' : 'text-zinc-400 hover:text-white'
-              }`}
-            >
-              جميع المصادر ({countAll})
-            </button>
-            <button
-              onClick={() => setSourceFilter('website_sheet')}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer flex items-center gap-1.5 ${
-                sourceFilter === 'website_sheet' ? 'bg-emerald-600 text-white' : 'text-zinc-400 hover:text-white'
-              }`}
-            >
-              <Globe className="w-3 h-3" />
-              <span>الموقع ({countSite})</span>
-            </button>
-            <button
-              onClick={() => setSourceFilter('google_form')}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer flex items-center gap-1.5 ${
-                sourceFilter === 'google_form' ? 'bg-indigo-600 text-white' : 'text-zinc-400 hover:text-white'
-              }`}
-            >
-              <FileText className="w-3 h-3" />
-              <span>Google Form ({countForm})</span>
-            </button>
-            <button
-              onClick={() => setSourceFilter('manual')}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer flex items-center gap-1.5 ${
-                sourceFilter === 'manual' ? 'bg-amber-600 text-white' : 'text-zinc-400 hover:text-white'
-              }`}
-            >
-              <User className="w-3 h-3" />
-              <span>إدخال يدوي</span>
-            </button>
-          </div>
-
-          {/* Search Box */}
-          <div className="relative w-full sm:w-72">
-            <Search className="w-4 h-4 text-zinc-400 absolute start-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="بحث في الطلبات، الأسماء، الأرقام..."
-              className="w-full bg-[#18181B] border border-[#27272A] rounded-lg ps-9 pe-4 py-1.5 text-xs text-white placeholder:text-zinc-500 focus:outline-none focus:border-indigo-500"
-            />
-          </div>
-        </div>
-
-        {/* Status Pills */}
-        <div className="flex flex-wrap items-center gap-2">
-          {[
-            { id: 'all', label: 'كل الحالات' },
-            { id: 'new', label: `جديدة (${countNew})` },
-            { id: 'under_review', label: `قيد المراجعة (${countReview})` },
-            { id: 'converted', label: `تم تحويلها لقضية (${countConverted})` },
-            { id: 'linked', label: `مرتبطة بقضية (${countLinked})` },
-            { id: 'waiting', label: 'بحاجة لمعلومات' },
-            { id: 'completed', label: 'مكتملة' },
-            { id: 'rejected', label: 'مرفوضة' },
-          ].map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer ${
-                activeTab === tab.id
-                  ? 'bg-zinc-200 text-zinc-900 font-semibold'
-                  : 'bg-[#18181B] text-zinc-400 hover:text-white border border-[#27272A]'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-      </div>
-
-      {/* Requests List */}
-      {loading ? (
-        <div className="p-12 text-center text-zinc-400 text-xs">جارٍ تحميل الطلبات الخارجية...</div>
-      ) : filteredRequests.length === 0 ? (
-        <div className="bg-[#121214] border border-[#27272A] rounded-xl p-12 text-center space-y-3">
-          <Inbox className="w-12 h-12 text-zinc-600 mx-auto" />
-          <h3 className="text-base font-bold text-white">لا توجد طلبات خارجية مطابقة</h3>
-          <p className="text-xs text-zinc-400 max-w-md mx-auto">
-            لم يتم العثور على طلبات جديدة. يمكنك النقر على &quot;مزامنة الآن&quot; لجلب الطلبات من Google Sheets وGoogle Forms أو إضافة طلب يدوياً.
-          </p>
-          <button
-            onClick={handleSyncNow}
-            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold inline-flex items-center gap-2 cursor-pointer mt-2"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-            <span>مزامنة الطلبات الآن</span>
-          </button>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 gap-3">
-          {filteredRequests.map((req) => {
-            const hasLinks = extractUrls(`${req.description} ${req.notes}`).length > 0;
-
-            return (
-              <div
-                key={req.id}
-                onClick={() => setSelectedReq(req)}
-                className="bg-[#121214] hover:bg-[#18181B] border border-[#27272A] hover:border-zinc-700 rounded-xl p-4 transition-all cursor-pointer group space-y-3"
-              >
-                {/* Card Header */}
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono font-bold text-xs text-indigo-400 bg-indigo-950/40 border border-indigo-800/40 px-2 py-0.5 rounded">
-                      {req.requestId}
-                    </span>
-                    {getSourceBadge(req.source, req.sourceLabel)}
-                    {getStatusBadge(req.status)}
-                  </div>
-
-                  <div className="flex items-center gap-3 text-xs text-zinc-400">
-                    {req.receivedAt && (
-                      <span className="flex items-center gap-1">
-                        <Calendar className="w-3 h-3 text-zinc-500" />
-                        <span>{new Date(req.receivedAt?.seconds ? req.receivedAt.seconds * 1000 : req.receivedAt).toLocaleDateString('ar-LB')}</span>
-                      </span>
-                    )}
-
-                    {/* Linked Case Indicator */}
-                    {req.linkedCaseNumber && (
-                      <span 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (req.linkedCaseId && onSelectCase) onSelectCase(req.linkedCaseId);
-                        }}
-                        className="font-mono text-xs font-bold text-emerald-400 bg-emerald-950/50 border border-emerald-700/50 px-2 py-0.5 rounded hover:bg-emerald-900/60 cursor-pointer flex items-center gap-1"
-                      >
-                        <ShieldCheck className="w-3 h-3" />
-                        <span>{req.linkedCaseNumber}</span>
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                {/* Card Main Info */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-bold text-white text-sm">{req.clientName}</span>
-                      {req.platform && (
-                        <span className="text-[11px] bg-zinc-800 text-zinc-300 px-2 py-0.5 rounded">
-                          {req.platform}
-                        </span>
-                      )}
-                      <span className="text-xs text-zinc-400 font-medium">
-                        • {req.requestType}
-                      </span>
-                    </div>
-
-                    {req.description && (
-                      <p className="text-xs text-zinc-400 line-clamp-2 leading-relaxed">
-                        {req.description}
-                      </p>
-                    )}
-                  </div>
-
-                  {/* Client Contact Quick Actions */}
-                  <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
-                    {req.phone && (
-                      <a
-                        href={`https://wa.me/${req.phone.replace(/[^0-9]/g, '')}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="px-2.5 py-1.5 rounded-md bg-emerald-600/10 hover:bg-emerald-600/20 text-emerald-400 border border-emerald-500/20 text-xs font-medium flex items-center gap-1.5 transition-colors"
-                      >
-                        <MessageSquare className="w-3.5 h-3.5" />
-                        <span>واتساب</span>
-                      </a>
-                    )}
-
-                    {req.status !== 'converted_to_case' && req.status !== 'linked_to_case' && (
-                      <button
-                        onClick={() => handleOpenConvertModal(req)}
-                        className="px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
-                      >
-                        <FolderPlus className="w-3.5 h-3.5" />
-                        <span>تحويل لقضية</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Footer Badges */}
-                <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-[#27272A]/60 text-[11px] text-zinc-500">
-                  {req.suggestedCaseType && (
-                    <span className="flex items-center gap-1 text-indigo-400 font-medium">
-                      <Sparkles className="w-3 h-3" />
-                      <span>نوع مقترح: {req.suggestedCaseType}</span>
-                    </span>
-                  )}
-
-                  {req.driveAttachments && req.driveAttachments.length > 0 && (
-                    <span className="flex items-center gap-1 text-amber-400 font-medium bg-amber-950/40 px-2 py-0.5 rounded border border-amber-800/30">
-                      <Paperclip className="w-3 h-3" />
-                      <span>{req.driveAttachments.length} ملفات / مرفقات</span>
-                    </span>
-                  )}
-
-                  {req.accountUrl && (
-                    <span className="flex items-center gap-1 text-zinc-400 truncate max-w-xs">
-                      <ExternalLink className="w-3 h-3" />
-                      <span className="truncate">{req.accountUrl}</span>
-                    </span>
-                  )}
-                </div>
-
-              </div>
-            );
-          })}
+      {/* Toast Alert Notification */}
+      {toastMessage && (
+        <div className="fixed bottom-6 end-6 z-50 bg-indigo-600 text-white px-5 py-3 rounded-xl shadow-xl flex items-center gap-3 animate-fade-in text-sm font-semibold border border-indigo-400">
+          <Sparkles className="w-5 h-5 text-amber-300 shrink-0" />
+          <span>{toastMessage}</span>
         </div>
       )}
 
-      {/* DETAIL MODAL / DRAWER */}
-      {selectedReq && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-2xl bg-[#121214] border border-[#27272A] rounded-2xl p-6 space-y-6 max-h-[90vh] overflow-y-auto shadow-2xl">
-            
-            {/* Modal Header */}
-            <div className="flex items-center justify-between pb-4 border-b border-[#27272A]">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-sm font-bold text-indigo-400 bg-indigo-950/40 px-2.5 py-0.5 rounded">
-                    {selectedReq.requestId}
-                  </span>
-                  {getSourceBadge(selectedReq.source, selectedReq.sourceLabel)}
-                  {getStatusBadge(selectedReq.status)}
-                </div>
-                <h2 className="text-lg font-bold text-white">{selectedReq.clientName}</h2>
+      {/* Main Top Header & Mode Switcher */}
+      <div className={`p-6 rounded-2xl border transition-all ${
+        isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200 shadow-xs'
+      }`}>
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          
+          {/* Header Branding */}
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 flex items-center justify-center shadow-xs">
+              <FileSpreadsheet className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h1 className="text-xl font-black tracking-tight">
+                  الطلبات الخارجية واستجابات Google Sheets
+                </h1>
+                <span className="text-[11px] font-mono font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 px-2.5 py-0.5 rounded-full">
+                  Multi-Worksheet + Zero-Auth
+                </span>
               </div>
+              <p className="text-xs text-slate-500 mt-1">
+                قراءة فورية واستعراض أوراق العمل والتبديل بين الصفحات، وتحويل الاستجابات لقضايا وعملاء فوراً
+              </p>
+            </div>
+          </div>
+
+          {/* Action Toolbar & Mode Switcher */}
+          <div className="flex items-center gap-2.5 flex-wrap">
+            {/* View Mode Toggle Button Group */}
+            <div className={`p-1 rounded-xl border flex items-center gap-1 ${
+              isDark ? 'bg-zinc-900 border-zinc-800' : 'bg-slate-100 border-slate-200'
+            }`}>
+              <button
+                onClick={() => setSectionMode('sheets_hub')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  sectionMode === 'sheets_hub'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : isDark ? 'text-zinc-400 hover:text-white' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>أوراق Google Sheets ({sheets.length})</span>
+              </button>
 
               <button
-                onClick={() => setSelectedReq(null)}
-                className="text-zinc-400 hover:text-white p-1 rounded-md hover:bg-zinc-800"
+                onClick={() => setSectionMode('firestore_db')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  sectionMode === 'firestore_db'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : isDark ? 'text-zinc-400 hover:text-white' : 'text-slate-600 hover:text-slate-900'
+                }`}
               >
-                <X className="w-5 h-5" />
+                <Inbox className="w-3.5 h-3.5" />
+                <span>سجل الطلبات المتزامنة ({firestoreRequests.length})</span>
               </button>
             </div>
 
-            {/* Linked Case Notice */}
-            {selectedReq.linkedCaseNumber && (
-              <div className="p-3 bg-emerald-950/30 border border-emerald-800/40 rounded-xl flex items-center justify-between">
-                <div className="flex items-center gap-2 text-xs text-emerald-300 font-medium">
-                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                  <span>مرتبط بالقضية الرسمية: <strong className="font-mono text-white">{selectedReq.linkedCaseNumber}</strong></span>
-                </div>
-                {selectedReq.linkedCaseId && onSelectCase && (
+            {/* Manual New Request Button */}
+            <button
+              onClick={() => setShowManualModal(true)}
+              className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 cursor-pointer ${
+                isDark 
+                  ? 'bg-zinc-800 hover:bg-zinc-700 border-zinc-700 text-white' 
+                  : 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-800'
+              }`}
+            >
+              <Plus className="w-4 h-4 text-emerald-500" />
+              <span>إدخال طلب يدوي</span>
+            </button>
+
+            {/* Connect / Add New Sheet Button */}
+            <button
+              onClick={() => setIsAddModalOpen(true)}
+              className="px-4 py-2 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white transition-all shadow-md shadow-indigo-600/20 flex items-center gap-2 cursor-pointer"
+            >
+              <FileSpreadsheet className="w-4 h-4" />
+              <span>ربط جدول / فورم جديد</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ========================================== */}
+      {/* SECTION 1: GOOGLE SHEETS & WORKSHEETS HUB */}
+      {/* ========================================== */}
+      {sectionMode === 'sheets_hub' && (
+        <div className="space-y-6">
+          
+          {/* Sheets Selector & Sheet Management Bar */}
+          <div className={`p-4 rounded-2xl border transition-all ${
+            isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200 shadow-xs'
+          }`}>
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              
+              {/* Sheets Pill Tabs */}
+              <div className="flex items-center gap-2 overflow-x-auto pb-2 lg:pb-0 scrollbar-none">
+                <span className="text-xs font-bold text-slate-400 shrink-0 ms-1">الجداول المتصلة:</span>
+                {sheets.map(s => {
+                  const isSelected = s.id === (currentSheet?.id || '');
+                  return (
+                    <button
+                      key={s.id}
+                      onClick={() => {
+                        setSelectedSheetId(s.id);
+                        setCurrentPage(1);
+                      }}
+                      className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
+                        isSelected
+                          ? 'bg-emerald-600 text-white border-emerald-500 shadow-xs'
+                          : isDark
+                            ? 'bg-zinc-900/80 hover:bg-zinc-800 text-zinc-300 border-zinc-800'
+                            : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                      }`}
+                    >
+                      <FileSpreadsheet className="w-4 h-4 text-emerald-300 shrink-0" />
+                      <span className="truncate max-w-[160px]">{s.title}</span>
+                      <span className={`text-[10px] px-1.5 py-0.2 rounded-md ${
+                        isSelected ? 'bg-emerald-700 text-white' : isDark ? 'bg-zinc-800 text-zinc-400' : 'bg-slate-200 text-slate-600'
+                      }`}>
+                        {s.totalRows || 0}
+                      </span>
+                    </button>
+                  );
+                })}
+
+                {sheets.length === 0 && (
+                  <div className="text-xs text-amber-500 font-medium py-1">
+                    لا يوجد جداول مضافة بعد. اضغط "ربط جدول / فورم جديد" للبدء.
+                  </div>
+                )}
+              </div>
+
+              {/* Sheet Control Buttons */}
+              {currentSheet && (
+                <div className="flex items-center gap-2 shrink-0">
                   <button
-                    onClick={() => onSelectCase(selectedReq.linkedCaseId!)}
-                    className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-semibold cursor-pointer"
+                    onClick={() => handleSyncSheet(currentSheet)}
+                    disabled={currentSheet.syncStatus === 'syncing'}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 cursor-pointer ${
+                      isDark ? 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-700'
+                    }`}
+                    title="تحديث البيانات من الشيت"
                   >
-                    فتح ملف القضية
+                    <RefreshCw className={`w-3.5 h-3.5 ${currentSheet.syncStatus === 'syncing' ? 'animate-spin text-indigo-400' : ''}`} />
+                    <span>تحديث البيانات</span>
+                  </button>
+
+                  <button
+                    onClick={handleAutoDiscoverTabs}
+                    disabled={isDiscoveringTabs}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 cursor-pointer ${
+                      isDark ? 'bg-zinc-900 border-zinc-800 text-emerald-400 hover:bg-zinc-800' : 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100'
+                    }`}
+                    title="فحص واكتشاف كافة أوراق العمل في الملف"
+                  >
+                    <Compass className={`w-3.5 h-3.5 ${isDiscoveringTabs ? 'animate-spin' : ''}`} />
+                    <span>اكتشاف الأوراق (Auto-Tabs)</span>
+                  </button>
+
+                  {currentSheet.url && (
+                    <a
+                      href={currentSheet.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className={`p-2 rounded-xl border text-xs cursor-pointer ${
+                        isDark ? 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-600'
+                      }`}
+                      title="فتح الشيت الأصلي في Google Sheets"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  )}
+
+                  <button
+                    onClick={() => handleDeleteSheet(currentSheet.id)}
+                    className="p-2 rounded-xl border border-rose-500/20 text-rose-500 hover:bg-rose-500/10 text-xs cursor-pointer"
+                    title="حذف هذا الجدول من المفضلة"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* 📑 WORKSHEETS / TABS NAVIGATION BAR */}
+            {currentSheet && (
+              <div className="mt-4 pt-3 border-t border-dashed border-zinc-700/40 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-400 shrink-0 me-1">
+                    <Layers className="w-4 h-4" />
+                    <span>أوراق العمل (Tabs):</span>
+                  </div>
+
+                  {(currentSheet.tabs || [{ gid: currentSheet.gid || '0', name: currentSheet.activeTabName || 'استجابات النموذج 1', isDefault: true }]).map((tab, idx) => {
+                    const isActive = (currentSheet.gid || '0') === tab.gid;
+                    const totalTabs = (currentSheet.tabs || []).length;
+                    return (
+                      <div
+                        key={`${tab.gid}_${idx}`}
+                        className={`flex items-center rounded-lg border text-xs font-bold transition-all shrink-0 ${
+                          isActive
+                            ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs'
+                            : isDark
+                              ? 'bg-zinc-900 text-zinc-400 hover:text-zinc-200 border-zinc-800'
+                              : 'bg-white text-slate-600 hover:text-slate-900 border-slate-200'
+                        }`}
+                      >
+                        <button
+                          onClick={() => handleSwitchTab(currentSheet.id, tab)}
+                          className="px-3 py-1.5 flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <span>{tab.name}</span>
+                          <span className={`text-[10px] px-1 py-0.2 rounded font-mono ${
+                            isActive ? 'bg-indigo-700 text-white' : isDark ? 'bg-zinc-800 text-zinc-500' : 'bg-slate-100 text-slate-500'
+                          }`}>
+                            GID: {tab.gid}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteTab(tab.gid, tab.name);
+                          }}
+                          title={`حذف ورقة العمل "${tab.name}"`}
+                          className={`p-1 me-1 rounded-md transition-colors cursor-pointer ${
+                            isActive
+                              ? 'text-indigo-200 hover:text-white hover:bg-indigo-700'
+                              : 'text-zinc-500 hover:text-rose-400 hover:bg-zinc-800'
+                          }`}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    );
+                  })}
+
+                  {/* Add Tab Button */}
+                  <button
+                    onClick={() => setIsAddTabModalOpen(true)}
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-dashed flex items-center gap-1 shrink-0 cursor-pointer ${
+                      isDark ? 'border-zinc-700 text-zinc-400 hover:text-white' : 'border-slate-300 text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>إضافة ورقة عمل</span>
+                  </button>
+                </div>
+
+                {/* Last Synced Info */}
+                <div className="text-[11px] text-slate-500 flex items-center gap-2 shrink-0">
+                  <Clock className="w-3.5 h-3.5 text-slate-400" />
+                  <span>
+                    آخر مزامنة: {currentSheet.lastSyncedAt ? new Date(currentSheet.lastSyncedAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) : 'غير محدد'}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Search, Status Filters & View Controls */}
+          {currentSheet && (
+            <div className={`p-4 rounded-2xl border transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+              isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200 shadow-xs'
+            }`}>
+              
+              {/* Search Field */}
+              <div className="relative flex-1 max-w-md">
+                <Search className="w-4 h-4 text-slate-400 absolute top-1/2 -translate-y-1/2 start-3.5" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    setCurrentPage(1);
+                  }}
+                  placeholder="بحث في الاسم، الهاتف، البلاغ، الملاحظات..."
+                  className={`w-full ps-10 pe-4 py-2 rounded-xl text-xs border focus:outline-none transition-all ${
+                    isDark ? 'bg-zinc-900 border-zinc-800 text-white focus:border-indigo-500' : 'bg-slate-50 border-slate-200 text-slate-900 focus:border-indigo-500'
+                  }`}
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="absolute top-1/2 -translate-y-1/2 end-3 text-slate-400 hover:text-slate-200 text-xs"
+                  >
+                    ✕
                   </button>
                 )}
               </div>
-            )}
 
-            {/* Client Info & Contacts */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-[#18181B] border border-[#27272A] rounded-xl p-4 text-xs">
-              <div className="space-y-2">
-                <div className="text-zinc-400 font-semibold">بيانات صاحب الطلب:</div>
-                <div className="text-white font-medium text-sm">{selectedReq.clientName}</div>
-                {selectedReq.phone && (
-                  <div className="flex items-center gap-2 text-zinc-300 font-mono">
-                    <Phone className="w-3.5 h-3.5 text-zinc-400" />
-                    <span>{selectedReq.phone}</span>
-                    <button 
-                      onClick={() => handleCopy(selectedReq.phone!, 'phone')}
-                      className="text-zinc-500 hover:text-white"
-                    >
-                      {copiedId === 'phone' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                    </button>
-                  </div>
-                )}
-                {selectedReq.email && (
-                  <div className="flex items-center gap-2 text-zinc-300">
-                    <Mail className="w-3.5 h-3.5 text-zinc-400" />
-                    <span>{selectedReq.email}</span>
-                  </div>
-                )}
+              {/* Status Filter Chips */}
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0 scrollbar-none">
+                <span className="text-xs text-slate-400 shrink-0 font-medium">الحالة:</span>
+                {[
+                  { id: 'all', label: 'الكل' },
+                  { id: 'unlinked', label: 'غير معالج' },
+                  { id: 'case_created', label: 'تم فتح قضية' },
+                  { id: 'case_linked', label: 'مرتبط بقضية' },
+                  { id: 'client_created', label: 'تمت إضافة عميل' },
+                  { id: 'task_created', label: 'تمت إضافة مهمة' },
+                  { id: 'has_files', label: 'يحتوي ملفات' }
+                ].map(flt => (
+                  <button
+                    key={flt.id}
+                    onClick={() => {
+                      setStatusFilter(flt.id as any);
+                      setCurrentPage(1);
+                    }}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all shrink-0 cursor-pointer ${
+                      statusFilter === flt.id
+                        ? 'bg-indigo-600 text-white'
+                        : isDark ? 'bg-zinc-900 text-zinc-400 hover:text-zinc-200' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {flt.label}
+                  </button>
+                ))}
               </div>
 
-              <div className="space-y-2">
-                <div className="text-zinc-400 font-semibold">تفاصيل التصنيف:</div>
-                <div className="text-white">نوع الطلب: <strong className="text-indigo-300">{selectedReq.requestType}</strong></div>
-                {selectedReq.platform && (
-                  <div className="text-white">المنصة: <strong className="text-emerald-300">{selectedReq.platform}</strong></div>
-                )}
-                {selectedReq.suggestedCaseType && (
-                  <div className="text-indigo-400 font-medium flex items-center gap-1">
-                    <Sparkles className="w-3 h-3" />
-                    <span>التصنيف المقترح: {selectedReq.suggestedCaseType}</span>
-                  </div>
-                )}
+              {/* View Switcher (Table / Grid) */}
+              <div className={`p-1 rounded-xl border flex items-center gap-1 shrink-0 ${
+                isDark ? 'bg-zinc-900 border-zinc-800' : 'bg-slate-100 border-slate-200'
+              }`}>
+                <button
+                  onClick={() => setViewMode('table')}
+                  className={`p-1.5 rounded-lg text-xs cursor-pointer ${
+                    viewMode === 'table' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="عرض كجدول بيانات تفصيلي"
+                >
+                  <TableIcon className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => setViewMode('cards')}
+                  className={`p-1.5 rounded-lg text-xs cursor-pointer ${
+                    viewMode === 'cards' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                  title="عرض كبطاقات تفاعلية"
+                >
+                  <LayoutGrid className="w-4 h-4" />
+                </button>
               </div>
+
             </div>
+          )}
 
-            {/* Description & URLs */}
-            <div className="space-y-2">
-              <div className="text-xs font-semibold text-zinc-400">تفاصيل المشكلة والطلب:</div>
-              <div className="p-4 bg-[#18181B] border border-[#27272A] rounded-xl text-xs text-zinc-200 leading-relaxed whitespace-pre-wrap">
-                {selectedReq.description || 'لا يوجد وصف مفصل'}
-              </div>
-            </div>
+          {/* ========================================== */}
+          {/* SHEET DATA VIEW: TABLE OR CARDS */}
+          {/* ========================================== */}
+          {currentSheet && currentSheet.rows && currentSheet.rows.length > 0 ? (
+            <div>
+              {viewMode === 'table' ? (
+                /* TABLE VIEW */
+                <div className={`rounded-2xl border overflow-hidden transition-all ${
+                  isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200 shadow-xs'
+                }`}>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-start text-xs">
+                      <thead className={`border-b text-slate-400 font-bold uppercase ${
+                        isDark ? 'bg-zinc-900/90 border-[#27272A]' : 'bg-slate-50 border-slate-200'
+                      }`}>
+                        <tr>
+                          <th className="p-3 text-start w-12">#</th>
+                          <th className="p-3 text-start">حالة المنظومة والربط</th>
+                          {currentSheet.columns.slice(0, 7).map(col => (
+                            <th 
+                              key={col.id}
+                              onClick={() => {
+                                if (sortColumn === col.id) {
+                                  setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc');
+                                } else {
+                                  setSortColumn(col.id);
+                                  setSortDirection('desc');
+                                }
+                              }}
+                              className="p-3 text-start cursor-pointer hover:text-indigo-400 transition-colors whitespace-nowrap"
+                            >
+                              <div className="flex items-center gap-1">
+                                <span>{col.label}</span>
+                                <ArrowUpDown className="w-3 h-3 opacity-60" />
+                              </div>
+                            </th>
+                          ))}
+                          <th className="p-3 text-center">المرفقات والروابط</th>
+                          <th className="p-3 text-center">الإجراءات والتحويل</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-zinc-800/40">
+                        {paginatedRows.map((row, rIdx) => {
+                          const rowNum = (currentPage - 1) * itemsPerPage + rIdx + 1;
+                          const rowInfo = getRowDetails(row, currentSheet);
 
-            {/* Links and Account URLs */}
-            {(selectedReq.accountUrl || selectedReq.postUrl || extractUrls(`${selectedReq.description} ${selectedReq.notes}`).length > 0) && (
-              <div className="space-y-2">
-                <div className="text-xs font-semibold text-zinc-400">الروابط المرفقة:</div>
-                <div className="space-y-1.5">
-                  {selectedReq.accountUrl && (
-                    <div className="flex items-center justify-between p-2.5 bg-[#18181B] border border-[#27272A] rounded-lg text-xs">
-                      <span className="text-zinc-400">رابط الحساب:</span>
-                      <a 
-                        href={selectedReq.accountUrl} 
-                        target="_blank" 
-                        rel="noreferrer" 
-                        className="text-indigo-400 hover:text-indigo-300 underline font-mono truncate max-w-sm"
-                      >
-                        {selectedReq.accountUrl}
-                      </a>
-                    </div>
-                  )}
-                  {selectedReq.postUrl && (
-                    <div className="flex items-center justify-between p-2.5 bg-[#18181B] border border-[#27272A] rounded-lg text-xs">
-                      <span className="text-zinc-400">رابط المنشور:</span>
-                      <a 
-                        href={selectedReq.postUrl} 
-                        target="_blank" 
-                        rel="noreferrer" 
-                        className="text-indigo-400 hover:text-indigo-300 underline font-mono truncate max-w-sm"
-                      >
-                        {selectedReq.postUrl}
-                      </a>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
+                          return (
+                            <tr
+                              key={row._rowId || rIdx}
+                              className={`transition-colors ${
+                                isDark ? 'hover:bg-zinc-800/40' : 'hover:bg-slate-50'
+                              } ${row._linkedCaseId ? (isDark ? 'bg-emerald-950/10' : 'bg-emerald-50/30') : ''}`}
+                            >
+                              {/* Row Number */}
+                              <td className="p-3 font-mono text-slate-400 text-[11px]">
+                                {rowNum}
+                              </td>
 
-            {/* Drive Attachments, Photos & Uploaded Files */}
-            {selectedReq.driveAttachments && selectedReq.driveAttachments.length > 0 && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
-                    <Paperclip className="w-3.5 h-3.5" />
-                    <span>المستندات والصور المرفوعة ({selectedReq.driveAttachments.length}):</span>
+                              {/* System Status Badges */}
+                              <td className="p-3 whitespace-nowrap">
+                                {row._linkedCaseNumber ? (
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-md">
+                                    <CheckCircle2 className="w-3 h-3" />
+                                    <span>قضية {row._linkedCaseNumber}</span>
+                                  </span>
+                                ) : row._linkedClientName ? (
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20 px-2 py-0.5 rounded-md">
+                                    <User className="w-3 h-3" />
+                                    <span>عميل مسجل</span>
+                                  </span>
+                                ) : row._linkedTaskTitle ? (
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded-md">
+                                    <CheckSquare className="w-3 h-3" />
+                                    <span>مهمة معينة</span>
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-medium bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded-md">
+                                    <Clock className="w-3 h-3" />
+                                    <span>جديد / غير معالج</span>
+                                  </span>
+                                )}
+                              </td>
+
+                              {/* Columns Data */}
+                              {currentSheet.columns.slice(0, 7).map(col => {
+                                const val = row[col.id] ?? '';
+                                const strVal = String(val);
+                                const analyzed = analyzeCellValue(strVal);
+
+                                return (
+                                  <td key={col.id} className="p-3 max-w-[220px] truncate text-slate-300">
+                                    {analyzed.isPhone ? (
+                                      <a
+                                        href={`tel:${strVal}`}
+                                        className="text-indigo-400 hover:underline flex items-center gap-1 font-mono"
+                                      >
+                                        <Phone className="w-3 h-3" />
+                                        <span>{strVal}</span>
+                                      </a>
+                                    ) : analyzed.isEmail ? (
+                                      <a
+                                        href={`mailto:${strVal}`}
+                                        className="text-indigo-400 hover:underline flex items-center gap-1"
+                                      >
+                                        <Mail className="w-3 h-3" />
+                                        <span className="truncate">{strVal}</span>
+                                      </a>
+                                    ) : analyzed.isDrive ? (
+                                      <button
+                                        onClick={() => setPreviewingFile({ url: strVal, title: col.label })}
+                                        className="text-emerald-400 hover:underline flex items-center gap-1 cursor-pointer font-semibold"
+                                      >
+                                        <Eye className="w-3 h-3" />
+                                        <span>معاينة المستند</span>
+                                      </button>
+                                    ) : (
+                                      <span title={strVal}>{strVal || '—'}</span>
+                                    )}
+                                  </td>
+                                );
+                              })}
+
+                              {/* Attachments & URLs */}
+                              <td className="p-3 text-center whitespace-nowrap">
+                                <div className="flex items-center justify-center gap-1.5">
+                                  {rowInfo.fileLinks.length > 0 && (
+                                    <button
+                                      onClick={() => setPreviewingFile({ url: rowInfo.fileLinks[0], title: 'مرفق النموذج' })}
+                                      className="p-1 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 text-xs flex items-center gap-1 px-2 cursor-pointer font-bold"
+                                      title="معاينة المستند المرفق من Drive"
+                                    >
+                                      <Eye className="w-3 h-3" />
+                                      <span>{rowInfo.fileLinks.length} ملف</span>
+                                    </button>
+                                  )}
+
+                                  {rowInfo.allUrls.length > 0 && (
+                                    <button
+                                      onClick={() => handleCopy(rowInfo.allUrls[0], `url_${rIdx}`)}
+                                      className="p-1.5 rounded-lg bg-zinc-800 text-zinc-400 hover:text-white cursor-pointer"
+                                      title="نسخ الرابط"
+                                    >
+                                      {copiedId === `url_${rIdx}` ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+
+                              {/* Row Quick Actions */}
+                              <td className="p-3 text-center whitespace-nowrap">
+                                <div className="flex items-center justify-center gap-1.5">
+                                  
+                                  {/* Convert to Case */}
+                                  <button
+                                    onClick={() => handleCreateCaseFromRow(row)}
+                                    disabled={isConvertingAction}
+                                    className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1 cursor-pointer transition-all shadow-xs"
+                                    title="تحويل هذه الاستجابة إلى ملف قضية جديد فوراً"
+                                  >
+                                    <FolderPlus className="w-3.5 h-3.5" />
+                                    <span>فتح قضية</span>
+                                  </button>
+
+                                  {/* Link to Existing Case */}
+                                  <button
+                                    onClick={() => {
+                                      setLinkingRow(row);
+                                      setIsLinkToCaseModalOpen(true);
+                                    }}
+                                    className={`p-1.5 rounded-lg border text-xs cursor-pointer ${
+                                      isDark ? 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:text-white' : 'bg-slate-100 border-slate-300 text-slate-700'
+                                    }`}
+                                    title="ربط بقضية قائمة في المنظومة"
+                                  >
+                                    <LinkIcon className="w-3.5 h-3.5 text-indigo-400" />
+                                  </button>
+
+                                  {/* Inspect Row Details */}
+                                  <button
+                                    onClick={() => setInspectingRow(row)}
+                                    className={`p-1.5 rounded-lg border text-xs cursor-pointer ${
+                                      isDark ? 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white' : 'bg-slate-100 border-slate-300 text-slate-700'
+                                    }`}
+                                    title="معاينة تفاصيل الاستجابة كاملة"
+                                  >
+                                    <Eye className="w-3.5 h-3.5" />
+                                  </button>
+
+                                </div>
+                              </td>
+
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
-                  <span className="text-[10px] text-zinc-400 font-mono">Google Drive & Form Uploads</span>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {selectedReq.driveAttachments.map((att, idx) => {
-                    const isImg = att.isImage || att.thumbnailUrl || att.fileType?.startsWith('image/') || (att.fileName || '').match(/\.(jpg|jpeg|png|webp|gif)$/i);
-                    const displayUrl = att.thumbnailUrl || att.url;
 
+                  {/* Pagination Footer */}
+                  <div className={`p-4 border-t flex items-center justify-between text-xs ${
+                    isDark ? 'bg-zinc-900/50 border-[#27272A] text-slate-400' : 'bg-slate-50 border-slate-200 text-slate-600'
+                  }`}>
+                    <div>
+                      عرض {(currentPage - 1) * itemsPerPage + 1} إلى {Math.min(currentPage * itemsPerPage, filteredRows.length)} من إجمالي {filteredRows.length} صف
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+                        disabled={currentPage === 1}
+                        className="px-3 py-1.5 rounded-lg border disabled:opacity-40 cursor-pointer"
+                      >
+                        السابق
+                      </button>
+                      <span className="font-bold text-white">صفحة {currentPage} من {totalPages}</span>
+                      <button
+                        onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                        disabled={currentPage === totalPages}
+                        className="px-3 py-1.5 rounded-lg border disabled:opacity-40 cursor-pointer"
+                      >
+                        التالي
+                      </button>
+                    </div>
+                  </div>
+
+                </div>
+              ) : (
+                /* CARDS VIEW */
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {paginatedRows.map((row, rIdx) => {
+                    const rowInfo = getRowDetails(row, currentSheet);
                     return (
-                      <div 
-                        key={idx}
-                        className="p-3 bg-zinc-900/90 border border-zinc-800 rounded-xl space-y-2 flex flex-col justify-between hover:border-amber-700/50 transition-all shadow-sm"
+                      <div
+                        key={row._rowId || rIdx}
+                        className={`p-5 rounded-2xl border transition-all flex flex-col justify-between ${
+                          isDark ? 'bg-[#18181B] border-[#27272A] hover:border-zinc-700' : 'bg-white border-slate-200 shadow-xs'
+                        } ${row._linkedCaseId ? 'ring-1 ring-emerald-500/40' : ''}`}
                       >
-                        {/* If image, show photo thumbnail */}
-                        {isImg && displayUrl && (
-                          <div 
-                            onClick={() => setPreviewImage({ url: att.url || displayUrl, name: att.fileName || 'صورة مرفقة' })}
-                            className="relative group w-full h-32 bg-black/40 rounded-lg overflow-hidden flex items-center justify-center cursor-pointer border border-zinc-800"
-                          >
-                            <img 
-                              src={displayUrl} 
-                              alt={att.fileName || 'Attachment preview'} 
-                              referrerPolicy="no-referrer"
-                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
-                            />
-                            <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center gap-2 transition-opacity">
-                              <Eye className="w-5 h-5 text-white" />
-                              <span className="text-xs font-bold text-white">تكبير الصورة</span>
-                            </div>
+                        <div className="space-y-3">
+                          {/* Card Top Badges */}
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] font-mono text-slate-400">#{(currentPage - 1) * itemsPerPage + rIdx + 1}</span>
+                            {row._linkedCaseNumber ? (
+                              <span className="text-[11px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-md">
+                                قضية {row._linkedCaseNumber}
+                              </span>
+                            ) : (
+                              <span className="text-[11px] bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded-md">
+                                استجابة واردة
+                              </span>
+                            )}
                           </div>
-                        )}
 
-                        <div className="flex items-center gap-2.5 truncate">
-                          <div className="p-2 rounded-lg bg-zinc-800/80 text-amber-400 shrink-0">
-                            {isImg ? <ImageIcon className="w-4 h-4 text-emerald-400" /> : <FileText className="w-4 h-4 text-amber-400" />}
+                          {/* Client Name / Header */}
+                          <div className="font-bold text-base text-white">
+                            {rowInfo.clientName || 'استجابة بدون اسم محدد'}
                           </div>
-                          <div className="truncate flex-1">
-                            <div className="text-xs font-bold text-white truncate" title={att.fileName}>{att.fileName || 'ملف مرفق'}</div>
-                            <div className="text-[10px] text-zinc-400 font-mono">{isImg ? 'صورة مرفقة' : (att.fileType || 'Google Drive File')}</div>
+
+                          {/* Contact Info */}
+                          <div className="space-y-1 text-xs">
+                            {rowInfo.phone && (
+                              <div className="flex items-center gap-2 text-indigo-400 font-mono">
+                                <Phone className="w-3.5 h-3.5" />
+                                <span>{rowInfo.phone}</span>
+                              </div>
+                            )}
+                            {rowInfo.email && (
+                              <div className="flex items-center gap-2 text-slate-400">
+                                <Mail className="w-3.5 h-3.5" />
+                                <span className="truncate">{rowInfo.email}</span>
+                              </div>
+                            )}
                           </div>
+
+                          {/* Notes / Description Summary */}
+                          <p className="text-xs text-slate-400 line-clamp-3 leading-relaxed">
+                            {rowInfo.notesSummary || 'لا توجد تفاصيل إضافية'}
+                          </p>
+
+                          {/* Files */}
+                          {rowInfo.fileLinks.length > 0 && (
+                            <div className="pt-2 border-t border-zinc-800 flex items-center gap-2">
+                              <span className="text-xs text-emerald-400 font-bold flex items-center gap-1">
+                                <Paperclip className="w-3.5 h-3.5" />
+                                <span>{rowInfo.fileLinks.length} ملفات مرفقة (Drive)</span>
+                              </span>
+                            </div>
+                          )}
                         </div>
 
-                        <div className="flex items-center justify-between pt-2 border-t border-zinc-800/80 text-xs">
-                          {isImg && (
-                            <button
-                              type="button"
-                              onClick={() => setPreviewImage({ url: att.url || displayUrl, name: att.fileName || 'صورة مرفقة' })}
-                              className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-xs font-medium flex items-center gap-1 cursor-pointer transition-colors"
-                            >
-                              <Eye className="w-3.5 h-3.5 text-cyan-400" />
-                              <span>معاينة</span>
-                            </button>
-                          )}
-                          <a 
-                            href={att.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="px-3 py-1 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 ms-auto cursor-pointer transition-colors shadow-sm"
+                        {/* Action Buttons */}
+                        <div className="pt-4 mt-4 border-t border-zinc-800/80 flex items-center justify-between gap-2">
+                          <button
+                            onClick={() => setInspectingRow(row)}
+                            className="px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold cursor-pointer"
                           >
-                            <ExternalLink className="w-3 h-3" />
-                            <span>فتح الملف</span>
-                          </a>
+                            معاينة
+                          </button>
+
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => {
+                                setLinkingRow(row);
+                                setIsLinkToCaseModalOpen(true);
+                              }}
+                              className="p-1.5 rounded-xl border border-zinc-700 text-zinc-300 hover:text-white text-xs cursor-pointer"
+                              title="ربط بقضية مسجلة"
+                            >
+                              <LinkIcon className="w-4 h-4 text-indigo-400" />
+                            </button>
+                            <button
+                              onClick={() => handleCreateCaseFromRow(row)}
+                              className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+                            >
+                              <FolderPlus className="w-3.5 h-3.5" />
+                              <span>فتح قضية</span>
+                            </button>
+                          </div>
                         </div>
                       </div>
                     );
                   })}
                 </div>
-              </div>
-            )}
-
-            {/* All Synchronized Sheet Columns (If imported from Website Sheet) */}
-            {selectedReq.rawPayload?.allColumns && Object.keys(selectedReq.rawPayload.allColumns).length > 0 && (
-              <div className="space-y-2 p-3 bg-zinc-900/60 border border-zinc-800/80 rounded-xl">
-                <div className="flex items-center justify-between text-xs font-bold text-indigo-300">
-                  <div className="flex items-center gap-1.5">
-                    <Database className="w-3.5 h-3.5 text-indigo-400" />
-                    <span>جميع أعمدة ورقة العمل المزامنة:</span>
-                  </div>
-                  <span className="text-[10px] text-zinc-500 font-mono">{Object.keys(selectedReq.rawPayload.allColumns).length} عمود</span>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto p-1">
-                  {Object.entries(selectedReq.rawPayload.allColumns as Record<string, string>).map(([colName, colVal], cIdx) => (
-                    <div key={cIdx} className="p-2 bg-zinc-950/80 rounded-lg border border-zinc-800/50 text-[11px]">
-                      <span className="text-zinc-400 font-medium block truncate">{colName}:</span>
-                      <span className="text-white font-mono block break-words mt-0.5">{colVal || '—'}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Notes */}
-            {selectedReq.notes && (
-              <div className="space-y-1 text-xs">
-                <span className="font-semibold text-zinc-400">ملاحظات إضافية:</span>
-                <p className="text-zinc-300 bg-[#18181B] p-3 rounded-lg border border-[#27272A] whitespace-pre-wrap">
-                  {selectedReq.notes}
-                </p>
-              </div>
-            )}
-
-            {/* Action Bar */}
-            <div className="pt-4 border-t border-[#27272A] flex flex-wrap items-center justify-between gap-3">
-              
-              {/* Status Selector */}
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-zinc-400">تغيير الحالة:</span>
-                <select
-                  value={selectedReq.status}
-                  onChange={(e) => handleUpdateStatus(selectedReq.id, e.target.value as ExternalRequestStatus)}
-                  className="bg-[#18181B] border border-[#27272A] rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
-                >
-                  <option value="new">جديد</option>
-                  <option value="under_review">قيد المراجعة</option>
-                  <option value="waiting_for_info">بحاجة لمعلومات</option>
-                  <option value="completed">مكتمل</option>
-                  <option value="rejected">مرفوض</option>
-                  <option value="duplicate">مكرر</option>
-                </select>
-              </div>
-
-              {/* Major Conversion Actions */}
-              <div className="flex items-center gap-2">
-                {selectedReq.status !== 'converted_to_case' && (
-                  <>
-                    <button
-                      onClick={() => handleOpenLinkModal(selectedReq)}
-                      className="px-3.5 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <LinkIcon className="w-3.5 h-3.5 text-indigo-400" />
-                      <span>ربط بقضية موجودة</span>
-                    </button>
-
-                    <button
-                      onClick={() => handleOpenConvertModal(selectedReq)}
-                      className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white flex items-center gap-1.5 shadow-md cursor-pointer"
-                    >
-                      <FolderPlus className="w-4 h-4" />
-                      <span>⚡ تحويل إلى قضية رسمية</span>
-                    </button>
-                  </>
-                )}
-              </div>
-
+              )}
             </div>
+          ) : (
+            /* Empty State for Sheets */
+            <div className={`p-12 text-center rounded-2xl border ${
+              isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200'
+            }`}>
+              <FileSpreadsheet className="w-12 h-12 text-slate-500 mx-auto mb-3 opacity-60" />
+              <h3 className="text-base font-bold text-white mb-1">لا توجد بيانات متاحة في ورقة العمل الحالية</h3>
+              <p className="text-xs text-slate-400 max-w-md mx-auto mb-4">
+                تأكد من مشاركة الجدول كـ "عام لمن يملك الرابط" (Anyone with link can view)، أو قم بالتبديل إلى ورقة عمل أخرى من شريط الأوراق.
+              </p>
+              {currentSheet && (
+                <button
+                  onClick={() => handleSyncSheet(currentSheet)}
+                  className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold inline-flex items-center gap-2 cursor-pointer"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  <span>إعادة تحميل الجدول</span>
+                </button>
+              )}
+            </div>
+          )}
 
-          </div>
         </div>
       )}
 
-      {/* ⚡ CONVERT TO CASE MODAL */}
-      {showConvertModal && selectedReq && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="w-full max-w-lg bg-[#121214] border border-[#27272A] rounded-2xl p-6 space-y-5 shadow-2xl">
-            
-            <div className="flex items-center justify-between pb-3 border-b border-[#27272A]">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white">
-                  <FolderPlus className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-white text-base">تحويل الطلب الخارجي إلى قضية رسمية</h3>
-                  <p className="text-xs text-zinc-400 font-mono">{selectedReq.requestId} ➔ JB-2026-XXXXXX</p>
-                </div>
+      {/* ========================================== */}
+      {/* SECTION 2: FIRESTORE EXTERNAL REQUESTS DB */}
+      {/* ========================================== */}
+      {sectionMode === 'firestore_db' && (
+        <div className="space-y-6">
+          <div className={`p-4 rounded-2xl border transition-all ${
+            isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200 shadow-xs'
+          }`}>
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-base font-bold text-white">سجل الطلبات الخارجية المتزامنة (Database)</h2>
+                <p className="text-xs text-slate-400">كافة الطلبات المحفوظة في قاعدة بيانات المنظومة مع تفاصيل التحويل</p>
               </div>
-              <button onClick={() => setShowConvertModal(false)} className="text-zinc-400 hover:text-white">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-4 text-xs">
-              
-              <div className="p-3 bg-indigo-950/30 border border-indigo-800/40 rounded-xl space-y-1">
-                <div className="font-semibold text-indigo-300">العميل وصاحب الطلب:</div>
-                <div className="text-white font-medium">{selectedReq.clientName} ({selectedReq.phone || 'بدون هاتف'})</div>
-              </div>
-
-              {/* Case Type */}
-              <div className="space-y-1.5">
-                <label className="text-zinc-300 font-medium">نوع القضية الرسمي:</label>
-                <select
-                  value={convertCaseType}
-                  onChange={(e) => setConvertCaseType(e.target.value)}
-                  className="w-full bg-[#18181B] border border-[#27272A] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-                >
-                  {DEFAULT_CASE_TYPES.map(ct => (
-                    <option key={ct.id} value={ct.key}>{ct.labelAr} ({ct.labelEn})</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Platform */}
-              <div className="space-y-1.5">
-                <label className="text-zinc-300 font-medium">المنصة المستهدفة:</label>
-                <select
-                  value={convertPlatform}
-                  onChange={(e) => setConvertPlatform(e.target.value)}
-                  className="w-full bg-[#18181B] border border-[#27272A] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-                >
-                  {DEFAULT_PLATFORMS.map(p => (
-                    <option key={p.id} value={p.name}>{p.nameAr} ({p.name})</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Priority */}
-              <div className="space-y-1.5">
-                <label className="text-zinc-300 font-medium">مستوى الأولوية:</label>
-                <select
-                  value={convertPriority}
-                  onChange={(e) => setConvertPriority(e.target.value as any)}
-                  className="w-full bg-[#18181B] border border-[#27272A] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-                >
-                  <option value="low">منخفضة</option>
-                  <option value="medium">متوسطة</option>
-                  <option value="high">عالية</option>
-                  <option value="urgent">عاجلة جداً</option>
-                </select>
-              </div>
-
-              {/* Drive Folder Option */}
-              <div className="flex items-center gap-2 pt-2">
-                <input
-                  type="checkbox"
-                  id="chkDriveFolder"
-                  checked={convertCreateDriveFolder}
-                  onChange={(e) => setConvertCreateDriveFolder(e.target.checked)}
-                  className="w-4 h-4 rounded text-indigo-600 bg-zinc-800 border-zinc-700"
-                />
-                <label htmlFor="chkDriveFolder" className="text-zinc-300 cursor-pointer">
-                  إنشاء مجلد مخصص للقضية تلقائياً في Google Drive (JB Work/Cases/2026/JB-...)
-                </label>
-              </div>
-
-            </div>
-
-            {/* Modal Buttons */}
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#27272A]">
               <button
-                type="button"
-                onClick={() => setShowConvertModal(false)}
-                className="px-4 py-2 rounded-lg bg-zinc-800 text-zinc-300 hover:text-white text-xs font-semibold cursor-pointer"
+                onClick={() => setShowManualModal(true)}
+                className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-2 cursor-pointer"
               >
-                إلغاء
-              </button>
-              <button
-                type="button"
-                onClick={handleExecuteConvert}
-                disabled={isConverting}
-                className="px-5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-2 cursor-pointer disabled:opacity-50"
-              >
-                {isConverting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-                <span>{isConverting ? 'جارٍ إنشاء القضية...' : 'تأكيد وإنشاء القضية'}</span>
+                <Plus className="w-4 h-4" />
+                <span>إدخال طلب جديد</span>
               </button>
             </div>
-
           </div>
-        </div>
-      )}
 
-      {/* 🔗 LINK TO EXISTING CASE MODAL */}
-      {showLinkModal && selectedReq && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="w-full max-w-lg bg-[#121214] border border-[#27272A] rounded-2xl p-6 space-y-5 shadow-2xl">
-            
-            <div className="flex items-center justify-between pb-3 border-b border-[#27272A]">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-zinc-800 flex items-center justify-center text-indigo-400">
-                  <LinkIcon className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-white text-base">ربط الطلب بقضية قائمة</h3>
-                  <p className="text-xs text-zinc-400">اختر القضية التي ترغب بربط هذا الطلب بها</p>
-                </div>
-              </div>
-              <button onClick={() => setShowLinkModal(false)} className="text-zinc-400 hover:text-white">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-3 text-xs">
-              <input
-                type="text"
-                value={linkCaseSearch}
-                onChange={(e) => setLinkCaseSearch(e.target.value)}
-                placeholder="بحث برقم القضية أو اسم العميل..."
-                className="w-full bg-[#18181B] border border-[#27272A] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-              />
-
-              <div className="max-h-60 overflow-y-auto space-y-2 border border-[#27272A] rounded-xl p-2 bg-[#18181B]">
-                {existingCases
-                  .filter(c => {
-                    if (!linkCaseSearch) return true;
-                    const q = linkCaseSearch.toLowerCase();
-                    return c.caseNumber.toLowerCase().includes(q) || 
-                           c.title.toLowerCase().includes(q) || 
-                           (c.client?.name || '').toLowerCase().includes(q);
-                  })
-                  .slice(0, 10)
-                  .map(c => (
-                    <div
-                      key={c.id}
-                      onClick={() => setSelectedExistingCaseId(c.id)}
-                      className={`p-2.5 rounded-lg border transition-all cursor-pointer flex items-center justify-between ${
-                        selectedExistingCaseId === c.id 
-                          ? 'bg-indigo-600/20 border-indigo-500 text-white' 
-                          : 'bg-[#121214] border-[#27272A] text-zinc-300 hover:border-zinc-700'
-                      }`}
-                    >
-                      <div className="space-y-0.5">
-                        <div className="font-mono font-bold text-xs text-indigo-400">{c.caseNumber}</div>
-                        <div className="text-xs text-white font-medium">{c.title}</div>
-                        <div className="text-[11px] text-zinc-500">{c.client?.name} • {c.caseType}</div>
+          {firestoreRequests.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {firestoreRequests.map(req => {
+                return (
+                  <div
+                    key={req.id}
+                    className={`p-5 rounded-2xl border transition-all flex flex-col justify-between ${
+                      isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200 shadow-xs'
+                    }`}
+                  >
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-mono font-bold text-indigo-400">{req.requestId}</span>
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                          req.status === 'converted_to_case' 
+                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                            : req.status === 'linked_to_case'
+                              ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20'
+                              : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                        }`}>
+                          {req.status === 'converted_to_case' ? `تم التحويل (${req.linkedCaseNumber})` : req.status === 'linked_to_case' ? `مرتبط (${req.linkedCaseNumber})` : 'جديد قيد الانتظار'}
+                        </span>
                       </div>
-                      {selectedExistingCaseId === c.id && <Check className="w-4 h-4 text-indigo-400" />}
+
+                      <div className="font-bold text-base text-white">{req.clientName}</div>
+                      
+                      <div className="text-xs text-slate-400 space-y-1">
+                        {req.phone && <div className="font-mono">{req.phone}</div>}
+                        {req.platform && <div>المنصة: <span className="text-zinc-300 font-semibold">{req.platform}</span></div>}
+                        {req.requestType && <div>النوع: <span className="text-zinc-300 font-semibold">{req.requestType}</span></div>}
+                      </div>
+
+                      <p className="text-xs text-slate-400 line-clamp-3">{req.description}</p>
                     </div>
-                  ))}
-              </div>
-            </div>
 
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#27272A]">
+                    <div className="pt-4 mt-4 border-t border-zinc-800 flex items-center justify-between gap-2">
+                      <span className="text-[10px] text-slate-500 font-mono">
+                        {req.sourceLabel || req.source}
+                      </span>
+
+                      {req.linkedCaseId && (
+                        <button
+                          onClick={() => onSelectCase && onSelectCase(req.linkedCaseId!)}
+                          className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1 cursor-pointer"
+                        >
+                          <CheckCircle className="w-3.5 h-3.5" />
+                          <span>عرض القضية ({req.linkedCaseNumber})</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className={`p-12 text-center rounded-2xl border ${
+              isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200'
+            }`}>
+              <Inbox className="w-12 h-12 text-slate-500 mx-auto mb-3 opacity-60" />
+              <h3 className="text-base font-bold text-white mb-1">لا توجد طلبات مسجلة في قاعدة البيانات</h3>
+              <p className="text-xs text-slate-400 mb-4">يمكنك إنشاء طلبات يدوية أو تحويل استجابات الشيت مباشرة إلى قضايا.</p>
               <button
-                type="button"
-                onClick={() => setShowLinkModal(false)}
-                className="px-4 py-2 rounded-lg bg-zinc-800 text-zinc-300 text-xs font-semibold cursor-pointer"
+                onClick={() => setShowManualModal(true)}
+                className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-bold inline-flex items-center gap-2 cursor-pointer"
               >
-                إلغاء
-              </button>
-              <button
-                type="button"
-                onClick={handleExecuteLink}
-                disabled={!selectedExistingCaseId || isLinking}
-                className="px-5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-2 cursor-pointer disabled:opacity-50"
-              >
-                {isLinking ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <LinkIcon className="w-3.5 h-3.5" />}
-                <span>تأكيد الربط</span>
+                <Plus className="w-4 h-4" />
+                <span>إدخال طلب جديد</span>
               </button>
             </div>
-
-          </div>
+          )}
         </div>
       )}
 
-      {/* ➕ MANUAL REQUEST MODAL */}
-      {showManualModal && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="w-full max-w-lg bg-[#121214] border border-[#27272A] rounded-2xl p-6 space-y-5 shadow-2xl max-h-[90vh] overflow-y-auto">
+      {/* ========================================== */}
+      {/* MODAL: ADD / CONNECT NEW GOOGLE SHEET */}
+      {/* ========================================== */}
+      {isAddModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className={`w-full max-w-xl rounded-2xl border p-6 shadow-2xl space-y-5 animate-fade-in ${
+            isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200'
+          }`}>
             
-            <div className="flex items-center justify-between pb-3 border-b border-[#27272A]">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white">
-                  <Plus className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-white text-base">إضافة طلب خارجي يدوياً</h3>
-                  <p className="text-xs text-zinc-400">لتسجيل الطلبات الواردة عبر الاتصال، الواتساب المباشر، أو الحضور</p>
-                </div>
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+              <div className="flex items-center gap-2.5">
+                <FileSpreadsheet className="w-5 h-5 text-emerald-400" />
+                <h3 className="text-base font-bold text-white">ربط Google Sheet أو نموذج استجابات</h3>
               </div>
-              <button onClick={() => setShowManualModal(false)} className="text-zinc-400 hover:text-white">
+              <button onClick={() => setIsAddModalOpen(false)} className="text-slate-400 hover:text-white cursor-pointer">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateManualRequest} className="space-y-4 text-xs">
+            {/* Mode Switcher: Direct URL vs Paste CSV/TSV */}
+            <div className="grid grid-cols-2 gap-2 p-1 bg-zinc-900 border border-zinc-800 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setImportMode('url')}
+                className={`py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                  importMode === 'url' ? 'bg-indigo-600 text-white' : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                رابط Google Sheets مباشر (Zero-Auth)
+              </button>
+              <button
+                type="button"
+                onClick={() => setImportMode('paste')}
+                className={`py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
+                  importMode === 'paste' ? 'bg-indigo-600 text-white' : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                لصق بيانات جدول (CSV / TSV)
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveNewSheet} className="space-y-4">
               
-              <div className="space-y-1.5">
-                <label className="text-zinc-300 font-medium">اسم العميل / صاحب الطلب *</label>
-                <input
-                  type="text"
-                  required
-                  value={manualName}
-                  onChange={(e) => setManualName(e.target.value)}
-                  placeholder="مثال: أحمد السعيد"
-                  className="w-full bg-[#18181B] border border-[#27272A] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-                />
-              </div>
+              {importMode === 'url' ? (
+                <>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-zinc-300">رابط Google Sheet (أو معرف الجدول)</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={formUrl}
+                        onChange={(e) => {
+                          setFormUrl(e.target.value);
+                          setTestResult(null);
+                        }}
+                        placeholder="https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit#gid=0"
+                        className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={handleTestUrl}
+                        disabled={isTestingUrl || !formUrl.trim()}
+                        className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isTestingUrl ? 'animate-spin' : ''}`} />
+                        <span>فحص الرابط</span>
+                      </button>
+                    </div>
+                  </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <label className="text-zinc-300 font-medium">رقم الهاتف / الواتساب</label>
-                  <input
-                    type="text"
-                    value={manualPhone}
-                    onChange={(e) => setManualPhone(e.target.value)}
-                    placeholder="+961..."
-                    className="w-full bg-[#18181B] border border-[#27272A] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-zinc-300 font-medium">البريد الإلكتروني</label>
-                  <input
-                    type="email"
-                    value={manualEmail}
-                    onChange={(e) => setManualEmail(e.target.value)}
-                    placeholder="client@example.com"
-                    className="w-full bg-[#18181B] border border-[#27272A] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-              </div>
+                  {testResult && (
+                    <div className={`p-3 rounded-xl border text-xs font-medium ${
+                      testResult.success 
+                        ? 'bg-emerald-950/30 border-emerald-800 text-emerald-300' 
+                        : 'bg-rose-950/30 border-rose-800 text-rose-300'
+                    }`}>
+                      {testResult.message}
+                    </div>
+                  )}
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <label className="text-zinc-300 font-medium">نوع الطلب</label>
-                  <select
-                    value={manualType}
-                    onChange={(e) => setManualType(e.target.value)}
-                    className="w-full bg-[#18181B] border border-[#27272A] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-                  >
-                    {DEFAULT_CASE_TYPES.map(ct => (
-                      <option key={ct.id} value={ct.labelAr}>{ct.labelAr}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-zinc-300 font-medium">المنصة</label>
-                  <select
-                    value={manualPlatform}
-                    onChange={(e) => setManualPlatform(e.target.value)}
-                    className="w-full bg-[#18181B] border border-[#27272A] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-                  >
-                    {DEFAULT_PLATFORMS.map(p => (
-                      <option key={p.id} value={p.name}>{p.nameAr}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-zinc-300">عنوان وتسمية الجدول</label>
+                      <input
+                        type="text"
+                        value={formTitle}
+                        onChange={(e) => setFormTitle(e.target.value)}
+                        placeholder="مثال: استجابات استمارة البلاغات"
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-zinc-300">رقم الورقة (GID)</label>
+                      <input
+                        type="text"
+                        value={formGid}
+                        onChange={(e) => setFormGid(e.target.value)}
+                        placeholder="0"
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                      />
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-zinc-300">عنوان الجدول</label>
+                    <input
+                      type="text"
+                      value={formTitle}
+                      onChange={(e) => setFormTitle(e.target.value)}
+                      placeholder="مثال: بيانات طلبات واردة"
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+                      required
+                    />
+                  </div>
 
-              <div className="space-y-1.5">
-                <label className="text-zinc-300 font-medium">رابط الحساب المتأثر</label>
-                <input
-                  type="url"
-                  value={manualAccountUrl}
-                  onChange={(e) => setManualAccountUrl(e.target.value)}
-                  placeholder="https://instagram.com/..."
-                  className="w-full bg-[#18181B] border border-[#27272A] rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
-                />
-              </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-zinc-300">الصق محتوى الجدول (CSV أو منسوخ من Excel/Sheets)</label>
+                    <textarea
+                      rows={5}
+                      value={pastedData}
+                      onChange={(e) => setPastedData(e.target.value)}
+                      placeholder="الاسم	الهاتف	المنصة	التفاصيل..."
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                      required
+                    />
+                  </div>
+                </>
+              )}
 
-              <div className="space-y-1.5">
-                <label className="text-zinc-300 font-medium">تفاصيل المشكلة والطلب</label>
-                <textarea
-                  rows={3}
-                  value={manualDescription}
-                  onChange={(e) => setManualDescription(e.target.value)}
-                  placeholder="اكتب ما ذكره العميل بالتفصيل..."
-                  className="w-full bg-[#18181B] border border-[#27272A] rounded-lg p-3 text-xs text-white focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#27272A]">
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-800">
                 <button
                   type="button"
-                  onClick={() => setShowManualModal(false)}
-                  className="px-4 py-2 rounded-lg bg-zinc-800 text-zinc-300 text-xs font-semibold cursor-pointer"
+                  onClick={() => setIsAddModalOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-300 text-xs font-semibold cursor-pointer"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold cursor-pointer"
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold cursor-pointer"
                 >
-                  حفظ الطلب الخارجي
+                  حفظ والبدء بالقراءة
                 </button>
               </div>
 
@@ -1777,18 +1930,316 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
         </div>
       )}
 
-      {/* Image Preview Lightbox Modal */}
-      {previewImage && (
+      {/* ========================================== */}
+      {/* MODAL: ADD CUSTOM WORKSHEET TAB */}
+      {/* ========================================== */}
+      {isAddTabModalOpen && currentSheet && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className={`w-full max-w-md rounded-2xl border p-6 shadow-2xl space-y-4 animate-fade-in ${
+            isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200'
+          }`}>
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+              <h3 className="text-sm font-bold text-white">إضافة ورقة عمل (Worksheet Tab)</h3>
+              <button onClick={() => setIsAddTabModalOpen(false)} className="text-slate-400 hover:text-white cursor-pointer">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleAddCustomTab} className="space-y-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-zinc-300">اسم الورقة</label>
+                <input
+                  type="text"
+                  value={newTabName}
+                  onChange={(e) => setNewTabName(e.target.value)}
+                  placeholder="مثال: استجابات النموذج 2 أو العملاء"
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+                  required
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-zinc-300">معرف الورقة (GID)</label>
+                <input
+                  type="text"
+                  value={newTabGid}
+                  onChange={(e) => setNewTabGid(e.target.value)}
+                  placeholder="مثال: 14589230 (يمكن تركه 0 للورقة الأولى)"
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-800">
+                <button
+                  type="button"
+                  onClick={() => setIsAddTabModalOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-300 text-xs font-semibold cursor-pointer"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold cursor-pointer"
+                >
+                  إضافة وتحميل
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================== */}
+      {/* MODAL: LINK ROW TO EXISTING CASE */}
+      {/* ========================================== */}
+      {isLinkToCaseModalOpen && linkingRow && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className={`w-full max-w-lg rounded-2xl border p-6 shadow-2xl space-y-4 animate-fade-in ${
+            isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200'
+          }`}>
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+              <div className="flex items-center gap-2">
+                <LinkIcon className="w-5 h-5 text-indigo-400" />
+                <h3 className="text-base font-bold text-white">ربط الاستجابة بقضية مسجلة</h3>
+              </div>
+              <button onClick={() => setIsLinkToCaseModalOpen(false)} className="text-slate-400 hover:text-white cursor-pointer">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute top-1/2 -translate-y-1/2 start-3" />
+                <input
+                  type="text"
+                  value={caseSearchQuery}
+                  onChange={(e) => setCaseSearchQuery(e.target.value)}
+                  placeholder="ابحث برقم القضية، العنوان، أو اسم الموكل..."
+                  className="w-full ps-9 pe-4 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-white focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="max-h-60 overflow-y-auto space-y-2 pe-1">
+                {systemCases
+                  .filter(c => {
+                    const q = caseSearchQuery.toLowerCase();
+                    return c.caseNumber.toLowerCase().includes(q) ||
+                           c.title.toLowerCase().includes(q) ||
+                           (c.client?.name || '').toLowerCase().includes(q);
+                  })
+                  .slice(0, 15)
+                  .map(c => (
+                    <div
+                      key={c.id}
+                      onClick={() => handleLinkRowToExistingCase(c)}
+                      className="p-3 rounded-xl border border-zinc-800 bg-zinc-900/60 hover:bg-zinc-800 hover:border-indigo-500 cursor-pointer transition-all flex items-center justify-between"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono font-bold text-indigo-400">{c.caseNumber}</span>
+                          <span className="text-xs font-bold text-white">{c.title}</span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">الموكل: {c.client?.name || 'غير محدد'}</div>
+                      </div>
+                      <button className="px-2.5 py-1 rounded-lg bg-indigo-600 text-white text-xs font-bold">
+                        اختيار
+                      </button>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================== */}
+      {/* MODAL: ROW DETAILS INSPECTOR */}
+      {/* ========================================== */}
+      {inspectingRow && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className={`w-full max-w-2xl max-h-[85vh] rounded-2xl border p-6 shadow-2xl space-y-4 overflow-y-auto ${
+            isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200'
+          }`}>
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+              <div className="flex items-center gap-2">
+                <FileSearch className="w-5 h-5 text-indigo-400" />
+                <h3 className="text-base font-bold text-white">تفاصيل الاستجابة الكاملة</h3>
+              </div>
+              <button onClick={() => setInspectingRow(null)} className="text-slate-400 hover:text-white cursor-pointer">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Key Values Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {currentSheet?.columns.map(col => {
+                  const val = inspectingRow[col.id] ?? '';
+                  if (!val) return null;
+                  return (
+                    <div key={col.id} className="p-3 rounded-xl bg-zinc-900 border border-zinc-800 space-y-1">
+                      <div className="text-[11px] font-bold text-slate-400">{col.label}</div>
+                      <div className="text-xs text-white break-words">{String(val)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Action Buttons */}
+              <div className="pt-4 border-t border-zinc-800 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleCreateClientFromRow(inspectingRow)}
+                    className="px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <UserPlus className="w-4 h-4 text-blue-400" />
+                    <span>إضافة كموكل</span>
+                  </button>
+                  <button
+                    onClick={() => handleCreateTaskFromRow(inspectingRow)}
+                    className="px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <CheckSquare className="w-4 h-4 text-amber-400" />
+                    <span>إنشاء مهمة</span>
+                  </button>
+                </div>
+
+                <button
+                  onClick={() => handleCreateCaseFromRow(inspectingRow)}
+                  className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-2 cursor-pointer"
+                >
+                  <FolderPlus className="w-4 h-4" />
+                  <span>فتح ملف قضية فوري</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================== */}
+      {/* MODAL: MANUAL REQUEST ENTRY */}
+      {/* ========================================== */}
+      {showManualModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className={`w-full max-w-lg rounded-2xl border p-6 shadow-2xl space-y-4 animate-fade-in ${
+            isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200'
+          }`}>
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+              <h3 className="text-base font-bold text-white">إدخال طلب خارجي يدوياً</h3>
+              <button onClick={() => setShowManualModal(false)} className="text-slate-400 hover:text-white cursor-pointer">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateManualRequest} className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-zinc-300">اسم صاحب الطلب / الموكل *</label>
+                <input
+                  type="text"
+                  value={manualName}
+                  onChange={(e) => setManualName(e.target.value)}
+                  placeholder="الاسم الكامل"
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+                  required
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-zinc-300">رقم الهاتف / واتساب</label>
+                  <input
+                    type="tel"
+                    value={manualPhone}
+                    onChange={(e) => setManualPhone(e.target.value)}
+                    placeholder="+964..."
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-zinc-300">البريد الإلكتروني</label>
+                  <input
+                    type="email"
+                    value={manualEmail}
+                    onChange={(e) => setManualEmail(e.target.value)}
+                    placeholder="email@example.com"
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-zinc-300">نوع الطلب</label>
+                  <select
+                    value={manualType}
+                    onChange={(e) => setManualType(e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+                  >
+                    {DEFAULT_CASE_TYPES.map(ct => (
+                      <option key={ct.id} value={ct.labelAr}>{ct.labelAr}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-zinc-300">المنصة</label>
+                  <select
+                    value={manualPlatform}
+                    onChange={(e) => setManualPlatform(e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+                  >
+                    {DEFAULT_PLATFORMS.map(p => (
+                      <option key={p.id} value={p.name}>{p.nameAr}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-zinc-300">تفاصيل المشكلة والطلب</label>
+                <textarea
+                  rows={3}
+                  value={manualDescription}
+                  onChange={(e) => setManualDescription(e.target.value)}
+                  placeholder="اكتب ما ذكره العميل بالتفصيل..."
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-800">
+                <button
+                  type="button"
+                  onClick={() => setShowManualModal(false)}
+                  className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-300 text-xs font-semibold cursor-pointer"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold cursor-pointer"
+                >
+                  حفظ الطلب
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================== */}
+      {/* MODAL: FILE PREVIEW (Google Drive) */}
+      {/* ========================================== */}
+      {previewingFile && (
         <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-4xl max-h-[90vh] bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex flex-col shadow-2xl">
             <div className="flex items-center justify-between pb-3 border-b border-zinc-800 mb-3">
               <div className="flex items-center gap-2">
-                <ImageIcon className="w-4 h-4 text-emerald-400" />
-                <span className="text-xs font-bold text-white truncate max-w-md">{previewImage.name}</span>
+                <Eye className="w-4 h-4 text-emerald-400" />
+                <span className="text-xs font-bold text-white truncate max-w-md">{previewingFile.title}</span>
               </div>
               <div className="flex items-center gap-2">
                 <a
-                  href={previewImage.url}
+                  href={previewingFile.url}
                   target="_blank"
                   rel="noreferrer"
                   className="text-xs px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg flex items-center gap-1"
@@ -1797,19 +2248,18 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
                   <span>فتح في نافذة جديدة</span>
                 </a>
                 <button
-                  onClick={() => setPreviewImage(null)}
+                  onClick={() => setPreviewingFile(null)}
                   className="text-xs px-3 py-1 bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg cursor-pointer"
                 >
                   إغلاق (✕)
                 </button>
               </div>
             </div>
-            <div className="flex-1 overflow-auto flex items-center justify-center bg-black/60 rounded-xl p-2 min-h-[300px]">
-              <img
-                src={previewImage.url}
-                alt={previewImage.name}
-                referrerPolicy="no-referrer"
-                className="max-w-full max-h-[70vh] object-contain rounded-lg shadow-md"
+            <div className="flex-1 overflow-auto flex items-center justify-center bg-black/60 rounded-xl p-2 min-h-[350px]">
+              <iframe
+                src={getGoogleDrivePreviewUrl(previewingFile.url)}
+                className="w-full h-[60vh] rounded-lg border-0"
+                title="معاينة الملف"
               />
             </div>
           </div>

@@ -170,28 +170,54 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
+export const DEFAULT_MASTER_PROFILE: UserProfile = {
+  uid: 'jaafar-master',
+  email: 'jfrbdran@gmail.com',
+  displayName: 'جعفر بدران (Jaafar Bdran)',
+  role: 'super_admin',
+  status: 'active',
+  isActive: true,
+  jobTitle: 'المالك والمشرف العام',
+  avatarUrl: '',
+  departments: ['all', 'cases', 'clients', 'finance', 'my_day', 'personal', 'tasks', 'reminders'],
+  permissions: {
+    casesView: true,
+    casesCreate: true,
+    casesEdit: true,
+    casesDelete: true,
+    requestsView: true,
+    requestsCreate: true,
+    requestsEdit: true,
+    financeView: true,
+    financeManage: true,
+    employeeEarningsView: true,
+    employeeEarningsManage: true,
+    personalFinanceView: true,
+    personalFinanceManage: true,
+    teamManage: true,
+    securityView: true,
+    settingsManage: true
+  },
+  createdAt: new Date(),
+  updatedAt: new Date()
+};
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(() => {
-    // Check for cached offline session
+  const [userProfile, setUserProfile] = useState<UserProfile>(() => {
     try {
       const cached = localStorage.getItem(LOCAL_STORAGE_SESSION_KEY);
       if (cached) {
-        return JSON.parse(cached) as UserProfile;
+        return { ...DEFAULT_MASTER_PROFILE, ...JSON.parse(cached) };
       }
     } catch (_) {}
-    return null;
+    return DEFAULT_MASTER_PROFILE;
   });
   
   const [googleAccessToken, setGoogleAccessTokenState] = useState<string | null>(getCachedGoogleAccessToken());
-  const [isLoading, setIsLoading] = useState<boolean>(() => {
-    // If we have a cached userProfile, open immediately without waiting
-    return !localStorage.getItem(LOCAL_STORAGE_SESSION_KEY);
-  });
-  const [isOfflineSession, setIsOfflineSession] = useState<boolean>(!navigator.onLine && !!userProfile);
-  const [isSystemInitialized, setIsSystemInitialized] = useState<boolean>(() => {
-    return localStorage.getItem(LOCAL_STORAGE_SETUP_KEY) === 'true';
-  });
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isOfflineSession, setIsOfflineSession] = useState<boolean>(true);
+  const [isSystemInitialized, setIsSystemInitialized] = useState<boolean>(true);
   const [systemSettings, setSystemSettings] = useState<SystemSetting | null>(null);
 
   // Check system initialization state

@@ -13,6 +13,7 @@ import {
   orderBy
 } from 'firebase/firestore';
 import { FileItemRecord } from '../../types';
+import { deleteEntity } from '../../services/database/deleteService';
 import { 
   Folder, 
   Plus, 
@@ -215,10 +216,15 @@ export const FilesModule: React.FC<{ onSelectCase?: (caseId: string) => void }> 
                   <button
                     onClick={async () => {
                       if (window.confirm(isRTL ? 'حذف هذا الرابط؟' : 'Delete this link?')) {
-                        await deleteDoc(doc(db, 'system_files', file.id));
+                        setFiles(prev => prev.filter(f => f.id !== file.id));
+                        await deleteEntity('system_file', file.id, userProfile, {
+                          customTitle: file.name,
+                          reason: 'حذف ملف نظام'
+                        });
                       }
                     }}
-                    className="text-rose-400 hover:text-rose-300 p-1"
+                    className="text-rose-400 hover:text-rose-300 p-1 cursor-pointer"
+                    title={isRTL ? 'حذف' : 'Delete'}
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>

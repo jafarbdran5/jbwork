@@ -1,6 +1,6 @@
 {
-  "name": "JB Work - نظام عمل جعفر بدران الداخلي",
-  "description": "منظومة داخلية خاصة لإدارة القضايا والمهام والمتابعة والعمليات لفريق جعفر بدران (Jaafar Bdran Internal Work System)",
+  "name": "نظام جعفر بدران لإدارة العمل والحياة | Life & Case OS",
+  "description": "منظومة شخصية متكاملة فائقة السرعة تعمل أوفلاين لتنظيم القضايا والمهام والعادات والمالية والحياة اليومية (Offline Personal & Case Management OS)",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

@@ -22,7 +22,9 @@ import {
   Briefcase, 
   Inbox,
   Command,
-  X
+  X,
+  FileSpreadsheet,
+  Sparkles
 } from 'lucide-react';
 
 interface CommandPaletteProps {
@@ -61,6 +63,20 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   if (!isOpen) return null;
 
   const actions = [
+    {
+      id: 'life_os',
+      label: isRTL ? 'نظام إدارة الحياة والروتين (Life OS)' : 'Life & Habits OS',
+      shortcut: 'L O',
+      icon: <Sparkles className="w-4 h-4 text-amber-400" />,
+      run: () => { onClose(); onNavigate('life_os'); }
+    },
+    {
+      id: 'sheets',
+      label: isRTL ? 'قارئ جداول Google Sheets واستجابات النماذج' : 'Google Sheets & Forms Reader',
+      shortcut: 'S H',
+      icon: <FileSpreadsheet className="w-4 h-4 text-emerald-400" />,
+      run: () => { onClose(); onNavigate('sheets'); }
+    },
     {
       id: 'new_case',
       label: isRTL ? 'إنشاء قضية جديدة فوراً' : 'Create New Case',
@@ -144,6 +160,20 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       shortcut: 'A',
       icon: <ShieldCheck className="w-4 h-4 text-teal-400" />,
       run: () => { onClose(); onNavigate('activity_log'); }
+    },
+    {
+      id: 'how_it_works',
+      label: isRTL ? 'دليل وتشغيل نظام جعفر بدران الشامل' : 'How Jaafar Bdran System Works',
+      shortcut: 'H W',
+      icon: <Sparkles className="w-4 h-4 text-cyan-400" />,
+      run: () => { onClose(); onNavigate('how_it_works'); }
+    },
+    {
+      id: 'backup',
+      label: isRTL ? 'النسخ الاحتياطي وتصدير JSON' : 'Offline Backup (JSON Export)',
+      shortcut: 'B K',
+      icon: <FileText className="w-4 h-4 text-emerald-400" />,
+      run: () => { onClose(); onNavigate('backup'); }
     },
     {
       id: 'trash',

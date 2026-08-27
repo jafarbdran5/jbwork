@@ -358,7 +358,7 @@ export const GoogleWorkspaceSettings: React.FC = () => {
       };
 
       // 1. Setup Drive Hierarchy
-      setProvisioningStep('2. جاري فحص وإنشاء هيكلية مجلدات Google Drive الرسمية (JB Work)...');
+      setProvisioningStep('2. جاري فحص وإنشاء هيكلية مجلدات Google Drive الرسمية (JAAFAR BDRAN SYSTEM)...');
       try {
         const driveRes = await setupJBWorkDriveHierarchy(token);
         updates.driveRootFolderId = driveRes.rootFolderId;

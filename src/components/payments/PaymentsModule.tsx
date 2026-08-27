@@ -5,6 +5,7 @@ import { db } from '../../lib/firebase';
 import { collection, query, orderBy, onSnapshot, addDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { PaymentRecord, CaseItem } from '../../types';
 import { logAuditAndEvent } from '../../lib/audit';
+import { deleteEntity } from '../../services/database/deleteService';
 import { 
   DollarSign, 
   Plus, 
@@ -15,7 +16,8 @@ import {
   AlertCircle, 
   Search,
   X,
-  Layers
+  Layers,
+  Trash2
 } from 'lucide-react';
 
 interface PaymentsModuleProps {

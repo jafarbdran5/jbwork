@@ -23,6 +23,7 @@ import {
   FormCategory,
   FormDestination
 } from '../../types';
+import { deleteEntity } from '../../services/database/deleteService';
 import { 
   FileText, 
   Plus, 
@@ -727,11 +728,15 @@ export const FormCenterModule: React.FC<{ onSelectCase?: (caseId: string) => voi
                         <button
                           onClick={async () => {
                             if (window.confirm(isRTL ? 'هل أنت متأكد من حذف هذا النموذج؟' : 'Delete this form?')) {
-                              await deleteDoc(doc(db, 'forms', f.id));
+                              setForms(prev => prev.filter(item => item.id !== f.id));
+                              await deleteEntity('form', f.id, userProfile, {
+                                customTitle: f.title,
+                                reason: 'حذف نموذج'
+                              });
                             }
                           }}
                           className="p-2 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-lg transition-colors cursor-pointer"
-                          title="Delete"
+                          title={isRTL ? 'حذف النموذج' : 'Delete Form'}
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>

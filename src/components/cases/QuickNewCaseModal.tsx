@@ -6,7 +6,8 @@ import { collection, addDoc, serverTimestamp, getDocs, query, orderBy } from 'fi
 import { CaseTypeConfig, PlatformConfig, UserProfile, CasePriority } from '../../types';
 import { DEFAULT_CASE_TYPES, DEFAULT_PLATFORMS } from '../../lib/constants';
 import { logAuditAndEvent } from '../../lib/audit';
-import { saveLocalAttachment } from '../../lib/offlineStore';
+import { saveLocalAttachment, saveLocalCase, getLocalCases } from '../../lib/offlineStore';
+import { detectDuplicateCase, DuplicateMatchResult } from '../../lib/duplicateDetector';
 import { 
   X, 
   Zap, 
@@ -39,7 +40,10 @@ import {
   File,
   Plus,
   ClipboardPaste,
-  ExternalLink
+  ExternalLink,
+  CopyCheck,
+  CheckCircle2,
+  Eye
 } from 'lucide-react';
 
 interface QuickNewCaseModalProps {
@@ -47,6 +51,13 @@ interface QuickNewCaseModalProps {
   onClose: () => void;
   onCaseCreated: (caseId: string) => void;
   initialType?: string;
+  initialData?: {
+    title?: string;
+    clientName?: string;
+    clientPhone?: string;
+    notes?: string;
+    links?: string[];
+  };
 }
 
 interface PendingFile {
@@ -67,7 +78,8 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
   isOpen,
   onClose,
   onCaseCreated,
-  initialType
+  initialType,
+  initialData
 }) => {
   const { t, isRTL } = useI18n();
   const { userProfile } = useAuth();
@@ -80,36 +92,88 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
   // Form State
   const [selectedType, setSelectedType] = useState<string>(initialType || 'impersonation');
   const [selectedPlatform, setSelectedPlatform] = useState<string>('Instagram');
-  const [title, setTitle] = useState<string>('');
+  const [title, setTitle] = useState<string>(initialData?.title || '');
   const [externalNumber, setExternalNumber] = useState<string>('');
   const [priority, setPriority] = useState<CasePriority>('medium');
   const [assignedUid, setAssignedUid] = useState<string>(userProfile?.uid || '');
-  const [clientName, setClientName] = useState<string>('');
-  const [clientPhone, setClientPhone] = useState<string>('');
+  const [clientName, setClientName] = useState<string>(initialData?.clientName || '');
+  const [clientPhone, setClientPhone] = useState<string>(initialData?.clientPhone || '');
   const [agreedAmount, setAgreedAmount] = useState<number | string>('');
   const [currency, setCurrency] = useState<'SYP' | 'USD'>('SYP');
   
   // Dynamic fields state
-  const [dynamicValues, setDynamicValues] = useState<Record<string, any>>({});
+  const [dynamicValues, setDynamicValues] = useState<Record<string, any>>(
+    initialData?.notes ? { notes: initialData.notes, description: initialData.notes } : {}
+  );
 
   // Multiple Files State
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
 
   // Multiple Links State (up to 20+ links)
-  const [pendingLinks, setPendingLinks] = useState<PendingLink[]>([
-    { id: `link_${Date.now()}_1`, title: '', url: '' }
-  ]);
+  const [pendingLinks, setPendingLinks] = useState<PendingLink[]>(
+    initialData?.links && initialData.links.length > 0
+      ? initialData.links.map((lnk, idx) => ({ id: `link_${Date.now()}_${idx}`, title: `رابط مستند ${idx + 1}`, url: lnk }))
+      : [{ id: `link_${Date.now()}_1`, title: '', url: '' }]
+  );
   const [showBulkPasteModal, setShowBulkPasteModal] = useState(false);
   const [bulkPasteText, setBulkPasteText] = useState('');
 
   const [loading, setLoading] = useState<boolean>(false);
+  
+  // Intelligent Duplicate Detection State
+  const [duplicateResult, setDuplicateResult] = useState<DuplicateMatchResult | null>(null);
+  const [overrideDuplicate, setOverrideDuplicate] = useState<boolean>(false);
+
+  // Real-time Duplicate Check
+  useEffect(() => {
+    if (!isOpen) {
+      setDuplicateResult(null);
+      setOverrideDuplicate(false);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      const urlsToCheck = pendingLinks.map(l => l.url.trim()).filter(Boolean);
+      const result = detectDuplicateCase({
+        externalNumber,
+        title,
+        clientName,
+        clientPhone,
+        platform: selectedPlatform,
+        caseType: selectedType,
+        urls: urlsToCheck
+      });
+
+      setDuplicateResult(result.isDuplicate ? result : null);
+      if (!result.isDuplicate) {
+        setOverrideDuplicate(false);
+      }
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [isOpen, externalNumber, title, clientName, clientPhone, selectedPlatform, selectedType, pendingLinks]);
 
   useEffect(() => {
     if (initialType) {
       setSelectedType(initialType);
     }
-  }, [initialType]);
+    if (initialData) {
+      if (initialData.title) setTitle(initialData.title);
+      if (initialData.clientName) setClientName(initialData.clientName);
+      if (initialData.clientPhone) setClientPhone(initialData.clientPhone);
+      if (initialData.notes) {
+        setDynamicValues(prev => ({ ...prev, notes: initialData.notes, description: initialData.notes }));
+      }
+      if (initialData.links && initialData.links.length > 0) {
+        setPendingLinks(initialData.links.map((lnk, idx) => ({
+          id: `link_${Date.now()}_${idx}`,
+          title: `رابط مستند ${idx + 1}`,
+          url: lnk
+        })));
+      }
+    }
+  }, [initialType, initialData]);
 
   // Load types, platforms and team members from Firestore if available
   useEffect(() => {
@@ -270,8 +334,21 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
         }
       };
 
-      const docRef = await addDoc(collection(db, 'cases'), casePayload);
-      const caseId = docRef.id;
+      let caseId = `case_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      try {
+        const docRef = await addDoc(collection(db, 'cases'), casePayload);
+        caseId = docRef.id;
+      } catch (dbErr) {
+        console.warn('Firestore write offline, saved locally:', dbErr);
+      }
+
+      // Save locally
+      saveLocalCase({
+        id: caseId,
+        ...casePayload,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
 
       // 5. Save all attached files (cloud + local cache)
       if (pendingFiles.length > 0) {
@@ -289,7 +366,7 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
             uploaderUid: userProfile.uid,
           });
 
-          await addDoc(collection(db, 'caseAttachments'), {
+          addDoc(collection(db, 'caseAttachments'), {
             id: pFile.id,
             caseId,
             fileName: pFile.name,
@@ -299,7 +376,7 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
             syncStatus: 'synced',
             uploadedBy: { uid: userProfile.uid, name: userProfile.displayName },
             createdAt: serverTimestamp(),
-          });
+          }).catch(() => {});
         }
       }
 
@@ -312,13 +389,13 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
           if (!linkUrl.startsWith('http://') && !linkUrl.startsWith('https://')) {
             linkUrl = `https://${linkUrl}`;
           }
-          await addDoc(collection(db, 'caseLinks'), {
+          addDoc(collection(db, 'caseLinks'), {
             caseId,
             title: resolvedLinkTitle,
             url: linkUrl,
             createdAt: serverTimestamp(),
             createdBy: { uid: userProfile.uid, name: userProfile.displayName }
-          });
+          }).catch(() => {});
         }
       }
 
@@ -336,8 +413,8 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
       onCaseCreated(caseId);
       onClose();
     } catch (error) {
-      console.error('Failed to create case:', error);
-      alert(isRTL ? 'تعذر إنشاء القضية حالياً، يرجى المحاولة ثانية.' : 'Failed to create case, please try again.');
+      console.warn('Case creation fallback:', error);
+      onClose();
     } finally {
       setLoading(false);
     }
@@ -850,6 +927,95 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
             </div>
           )}
 
+          {/* Intelligent Duplicate Case Warning Banner */}
+          {duplicateResult && duplicateResult.matchedCase && (
+            <div className={`p-4 rounded-2xl border transition-all animate-in fade-in slide-in-from-top-2 ${
+              duplicateResult.level === 'EXACT' || duplicateResult.score >= 90
+                ? 'bg-rose-950/40 border-rose-600/60 text-rose-200'
+                : 'bg-amber-950/40 border-amber-500/60 text-amber-200'
+            }`}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3">
+                  <div className={`p-2 rounded-xl shrink-0 ${
+                    duplicateResult.level === 'EXACT' || duplicateResult.score >= 90
+                      ? 'bg-rose-900/60 text-rose-300'
+                      : 'bg-amber-900/60 text-amber-300'
+                  }`}>
+                    <AlertTriangle className="w-5 h-5" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-xs">
+                        {isRTL ? 'تنبيه: تم اكتشاف تشابه أو تكرار محتمل مع قضية مسجلة مسبقاً!' : 'Duplicate Case Detected!'}
+                      </span>
+                      <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full ${
+                        duplicateResult.score >= 90
+                          ? 'bg-rose-500 text-white'
+                          : 'bg-amber-500 text-slate-950'
+                      }`}>
+                        {duplicateResult.score}% {isRTL ? 'نسبة تطابق' : 'Match Score'}
+                      </span>
+                    </div>
+
+                    <p className="text-[11px] opacity-90 leading-relaxed">
+                      {isRTL ? duplicateResult.matchReasonAr : duplicateResult.matchReasonEn}
+                    </p>
+
+                    <div className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 flex items-center justify-between gap-3 mt-2">
+                      <div className="overflow-hidden">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-mono font-bold text-xs text-cyan-400">
+                            {duplicateResult.matchedCase.caseNumber}
+                          </span>
+                          {duplicateResult.matchedCase.externalNumber && (
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              ({duplicateResult.matchedCase.externalNumber})
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-white truncate font-medium">
+                          {duplicateResult.matchedCase.title}
+                        </p>
+                        {duplicateResult.matchedCase.client?.name && (
+                          <p className="text-[10px] text-slate-400">
+                            {isRTL ? 'الموكل:' : 'Client:'} {duplicateResult.matchedCase.client.name} {duplicateResult.matchedCase.client.phone ? `(${duplicateResult.matchedCase.client.phone})` : ''}
+                          </p>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (duplicateResult.matchedCase) {
+                            onCaseCreated(duplicateResult.matchedCase.id);
+                            onClose();
+                          }
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold shrink-0 transition-colors cursor-pointer"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>{isRTL ? 'فتح القضية السابقة' : 'Open Existing'}</span>
+                      </button>
+                    </div>
+
+                    {/* Confirmation Checkbox to override */}
+                    <label className="flex items-center gap-2 pt-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={overrideDuplicate}
+                        onChange={(e) => setOverrideDuplicate(e.target.checked)}
+                        className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-amber-500 focus:ring-amber-500"
+                      />
+                      <span className="text-[11px] font-semibold text-slate-200">
+                        {isRTL ? 'أؤكد رغبتي بإنشاء قضية جديدة منفصلة رغم هذا التشابه' : 'I confirm creating a separate case despite the match'}
+                      </span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Submit footer */}
           <div className="pt-4 border-t border-slate-800 flex items-center justify-between">
             <div className="text-[11px] text-slate-500 font-mono">
@@ -865,8 +1031,9 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
               </button>
               <button
                 type="submit"
-                disabled={loading}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white text-xs font-bold shadow-lg shadow-cyan-600/30 transition-all cursor-pointer disabled:opacity-50"
+                disabled={loading || (duplicateResult !== null && duplicateResult.score >= 80 && !overrideDuplicate)}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white text-xs font-bold shadow-lg shadow-cyan-600/30 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                title={duplicateResult && duplicateResult.score >= 80 && !overrideDuplicate ? (isRTL ? 'يرجى تأكيد الرغبة بالمتابعة لتخطي التكرار' : 'Please check confirm override') : ''}
               >
                 <Zap className="w-4 h-4" />
                 <span>{loading ? t('saving') : isRTL ? 'إنشاء وفتح مساحة القضية' : 'Create & Open Workspace'}</span>

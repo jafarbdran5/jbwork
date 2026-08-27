@@ -5,7 +5,8 @@ import { db } from '../../lib/firebase';
 import { collection, query, orderBy, onSnapshot, addDoc, updateDoc, doc, serverTimestamp } from 'firebase/firestore';
 import { CaseReminder, CaseItem } from '../../types';
 import { logAuditAndEvent } from '../../lib/audit';
-import { Bell, Clock, Plus, CheckCircle2, Circle, Calendar, AlertCircle, X, Search } from 'lucide-react';
+import { deleteEntity } from '../../services/database/deleteService';
+import { Bell, Clock, Plus, CheckCircle2, Circle, Calendar, AlertCircle, X, Search, Trash2 } from 'lucide-react';
 
 interface RemindersModuleProps {
   onSelectCase?: (caseId: string) => void;
@@ -84,9 +85,21 @@ export const RemindersModule: React.FC<RemindersModuleProps> = ({ onSelectCase }
     }
   };
 
+  const handleDeleteReminder = async (e: React.MouseEvent, reminder: CaseReminder) => {
+    e.stopPropagation();
+    if (!window.confirm(isRTL ? `هل أنت متأكد من حذف التذكير: ${reminder.title}؟` : `Delete reminder: ${reminder.title}?`)) return;
+
+    setReminders(prev => prev.filter(r => r.id !== reminder.id));
+    await deleteEntity('reminder', reminder.id, userProfile, {
+      customTitle: reminder.title,
+      reason: `حذف تذكير من قسم التذكيرات`
+    });
+  };
+
   const todayStr = new Date().toISOString().split('T')[0];
 
   const filtered = reminders.filter(r => {
+    if (r.isDeleted || (r as any)._deleted) return false;
     if (filterCategory === 'today') return r.dueDate === todayStr;
     if (filterCategory === 'upcoming') return r.dueDate > todayStr;
     if (filterCategory === 'overdue') return r.dueDate < todayStr && r.status !== 'completed';
@@ -196,9 +209,22 @@ export const RemindersModule: React.FC<RemindersModuleProps> = ({ onSelectCase }
                 </div>
               </div>
 
-              <div className="text-end font-mono text-xs text-orange-400 font-bold shrink-0">
-                <p>{rem.dueDate}</p>
-                <p className="text-[10px] text-slate-500">{rem.dueTime || ''}</p>
+              <div className="flex items-center gap-2.5 shrink-0">
+                <div className="text-end font-mono text-xs text-orange-400 font-bold">
+                  <p>{rem.dueDate}</p>
+                  <p className="text-[10px] text-slate-500">{rem.dueTime || ''}</p>
+                </div>
+
+                {canEdit && (
+                  <button
+                    type="button"
+                    onClick={(e) => handleDeleteReminder(e, rem)}
+                    className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 border border-transparent hover:border-rose-900/40 transition-colors cursor-pointer"
+                    title={isRTL ? 'حذف التذكير' : 'Delete reminder'}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
             </div>
           ))}

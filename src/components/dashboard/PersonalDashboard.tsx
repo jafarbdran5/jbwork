@@ -5,6 +5,7 @@ import { db } from '../../lib/firebase';
 import { collection, query, where, orderBy, limit, onSnapshot, getDocs } from 'firebase/firestore';
 import { CaseItem, CaseReminder, CaseTask, CaseEvent, InternalRequest, CaseTypeConfig } from '../../types';
 import { DEFAULT_CASE_TYPES } from '../../lib/constants';
+import { getLocalCases } from '../../lib/offlineStore';
 import { 
   ShieldCheck, 
   Layers, 
@@ -39,7 +40,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({
   const { t, isRTL } = useI18n();
   const { userProfile, isSuperAdmin } = useAuth();
 
-  const [cases, setCases] = useState<CaseItem[]>([]);
+  const [cases, setCases] = useState<CaseItem[]>(() => getLocalCases().filter(c => !c.isDeleted && !(c as any)._deleted));
   const [reminders, setReminders] = useState<CaseReminder[]>([]);
   const [tasks, setTasks] = useState<CaseTask[]>([]);
   const [requests, setRequests] = useState<InternalRequest[]>([]);
@@ -57,13 +58,26 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({
 
   const displayName = userProfile?.displayName?.split(' ')[0] || (isRTL ? 'جعفر' : 'Jaafar');
 
-  // Load Dashboard Data
+  // Load Dashboard Data & Listen to Deletion / Restore events
   useEffect(() => {
+    const syncLocal = () => {
+      const local = getLocalCases().filter(c => !c.isDeleted && !(c as any)._deleted);
+      if (local.length > 0) setCases(local);
+    };
+
+    const handleDataChanged = () => {
+      syncLocal();
+    };
+
+    window.addEventListener('jb_data_changed', handleDataChanged);
+    window.addEventListener('jb_entity_deleted', handleDataChanged);
+    window.addEventListener('jb_entity_restored', handleDataChanged);
+
     const qCases = query(collection(db, 'cases'));
     const unsubCases = onSnapshot(qCases, (snap) => {
       const items = snap.docs
         .map(d => ({ id: d.id, ...d.data() } as CaseItem))
-        .filter(c => !c.isDeleted)
+        .filter(c => !c.isDeleted && !(c as any)._deleted)
         .sort((a, b) => {
           const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
           const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
@@ -72,7 +86,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({
       setCases(items);
       setLoading(false);
     }, (err) => {
-      console.warn('Cases load error in dashboard:', err);
+      syncLocal();
       setLoading(false);
     });
 
@@ -112,6 +126,9 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({
       unsubRequests();
       unsubExternalRequests();
       unsubEvents();
+      window.removeEventListener('jb_data_changed', handleDataChanged);
+      window.removeEventListener('jb_entity_deleted', handleDataChanged);
+      window.removeEventListener('jb_entity_restored', handleDataChanged);
     };
   }, []);
 

@@ -8,6 +8,12 @@
   }
 
   body {
+    background-color: #F8FAFC;
+    color: #0F172A;
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  html.dark body {
     background-color: #09090B;
     color: #FAFAFA;
   }
@@ -29,12 +35,112 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: #27272A;
+    background: #CBD5E1;
     border-radius: 9999px;
   }
+  html.dark ::-webkit-scrollbar-thumb {
+    background: #27272A;
+  }
   ::-webkit-scrollbar-thumb:hover {
+    background: #94A3B8;
+  }
+  html.dark ::-webkit-scrollbar-thumb:hover {
     background: #3F3F46;
   }
+}
+
+/* Global Light Mode Adaptive Enhancements */
+/* In light mode (when html does NOT have .dark), remap deep dark slate/zinc classes to crisp, high-contrast light styling */
+html:not(.dark) .bg-\[\#09090B\],
+html:not(.dark) .bg-\[\#0d0d10\],
+html:not(.dark) .bg-\[\#121214\],
+html:not(.dark) .bg-slate-950,
+html:not(.dark) .bg-zinc-950 {
+  background-color: #FFFFFF !important;
+}
+
+html:not(.dark) .bg-\[\#18181B\],
+html:not(.dark) .bg-slate-900,
+html:not(.dark) .bg-zinc-900 {
+  background-color: #FFFFFF !important;
+  border-color: #E2E8F0 !important;
+}
+
+html:not(.dark) .bg-slate-900\/80,
+html:not(.dark) .bg-slate-900\/90,
+html:not(.dark) .bg-slate-900\/60,
+html:not(.dark) .bg-slate-950\/60,
+html:not(.dark) .bg-slate-950\/80 {
+  background-color: #FFFFFF !important;
+  border-color: #E2E8F0 !important;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05) !important;
+}
+
+html:not(.dark) .bg-slate-800,
+html:not(.dark) .bg-zinc-800 {
+  background-color: #F1F5F9 !important;
+  border-color: #CBD5E1 !important;
+}
+
+html:not(.dark) .border-\[\#27272A\],
+html:not(.dark) .border-slate-800,
+html:not(.dark) .border-zinc-800,
+html:not(.dark) .border-slate-700 {
+  border-color: #E2E8F0 !important;
+}
+
+html:not(.dark) .text-\[\#FAFAFA\],
+html:not(.dark) .text-white {
+  color: #0F172A !important;
+}
+
+/* Keep white text on solid buttons like bg-indigo-600, bg-cyan-600, etc. */
+html:not(.dark) button.bg-indigo-600,
+html:not(.dark) button.bg-indigo-700,
+html:not(.dark) button.bg-cyan-600,
+html:not(.dark) button.bg-emerald-600,
+html:not(.dark) button.bg-rose-600,
+html:not(.dark) .bg-indigo-600 .text-white,
+html:not(.dark) .bg-indigo-700 .text-white,
+html:not(.dark) .bg-cyan-600 .text-white,
+html:not(.dark) .bg-emerald-600 .text-white,
+html:not(.dark) .bg-rose-600 .text-white,
+html:not(.dark) .bg-gradient-to-r .text-white,
+html:not(.dark) button[class*="bg-indigo-600"],
+html:not(.dark) button[class*="bg-cyan-600"],
+html:not(.dark) button[class*="bg-emerald-600"] {
+  color: #FFFFFF !important;
+}
+
+html:not(.dark) .text-\[\#A1A1AA\],
+html:not(.dark) .text-slate-400,
+html:not(.dark) .text-zinc-400 {
+  color: #64748B !important;
+}
+
+html:not(.dark) .text-\[\#71717A\],
+html:not(.dark) .text-slate-500,
+html:not(.dark) .text-zinc-500 {
+  color: #64748B !important;
+}
+
+html:not(.dark) .text-slate-300,
+html:not(.dark) .text-zinc-300 {
+  color: #334155 !important;
+}
+
+html:not(.dark) input.bg-slate-950,
+html:not(.dark) input.bg-\[\#18181B\],
+html:not(.dark) select.bg-slate-950,
+html:not(.dark) textarea.bg-slate-950 {
+  background-color: #F8FAFC !important;
+  color: #0F172A !important;
+  border-color: #CBD5E1 !important;
+}
+
+html:not(.dark) input::placeholder,
+html:not(.dark) textarea::placeholder {
+  color: #94A3B8 !important;
 }
 
 /* Custom animation utilities */
@@ -46,4 +152,3 @@
 .animate-pulse-subtle {
   animation: pulse-subtle 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
-

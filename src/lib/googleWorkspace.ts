@@ -434,7 +434,7 @@ export async function createJBWorkExternalForm(
     {
       updateFormInfo: {
         info: {
-          description: 'النموذج الرسمي لاستقبال الطلبات والبلاغات والقضايا الخارجية إلى نظام عمل جعفر بدران (JB Work).'
+          description: 'النموذج الرسمي لاستقبال الطلبات والبلاغات والقضايا الخارجية إلى منظومة جعفر بدران (JAAFAR BDRAN SYSTEM).'
         },
         updateMask: 'description'
       }
@@ -712,7 +712,7 @@ export async function createDepartmentGoogleForm(
     {
       updateFormInfo: {
         info: {
-          description: params.description || `استمارة رسمية مخصصة لقسم ${params.department} — نظام JB Work.`
+          description: params.description || `استمارة رسمية مخصصة لقسم ${params.department} — منظومة جعفر بدران (JAAFAR BDRAN SYSTEM).`
         },
         updateMask: 'description'
       }
@@ -1189,7 +1189,7 @@ export async function runFullGoogleSync(
         const newExtReq: Record<string, any> = {
           requestId,
           source: 'google_form',
-          sourceLabel: 'Google Form (JB Work)',
+          sourceLabel: 'Google Form (Jaafar Bdran System)',
           sourceId,
           clientName: name || 'صاحب طلب خارجي',
           phone: phone || '',

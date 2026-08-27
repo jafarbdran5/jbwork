@@ -11,6 +11,7 @@ import {
   type Firestore 
 } from 'firebase/firestore';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
+import { getNextSequentialCaseNumber } from './offlineStore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 // Initialize Firebase App
@@ -78,9 +79,7 @@ export async function generateNextCaseNumber(targetYear?: number): Promise<strin
     const formattedIndex = String(nextNumber).padStart(6, '0');
     return `JB-${year}-${formattedIndex}`;
   } catch (error) {
-    console.error('Error generating atomic case number:', error);
-    // Fallback pseudo-atomic generation
-    const fallbackRand = Math.floor(100000 + Math.random() * 900000);
-    return `JB-${year}-${fallbackRand}`;
+    // If Firestore API is disabled, offline, or unavailable, fall back cleanly to sequential local counter
+    return getNextSequentialCaseNumber(year);
   }
 }

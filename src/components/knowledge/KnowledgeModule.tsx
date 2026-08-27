@@ -14,6 +14,7 @@ import {
   orderBy
 } from 'firebase/firestore';
 import { KnowledgeItem, KnowledgeCategory } from '../../types';
+import { deleteEntity } from '../../services/database/deleteService';
 import { 
   BookOpen, 
   Plus, 
@@ -318,10 +319,15 @@ export const KnowledgeModule: React.FC = () => {
                     <button
                       onClick={async () => {
                         if (window.confirm(isRTL ? 'حذف هذا الدليل؟' : 'Delete this guide?')) {
-                          await deleteDoc(doc(db, 'knowledge_base', art.id));
+                          setArticles(prev => prev.filter(a => a.id !== art.id));
+                          await deleteEntity('knowledge', art.id, userProfile, {
+                            customTitle: art.title,
+                            reason: 'حذف دليل معرفي'
+                          });
                         }
                       }}
-                      className="p-1 text-rose-400 hover:text-rose-300 rounded hover:bg-rose-500/10"
+                      className="p-1 text-rose-400 hover:text-rose-300 rounded hover:bg-rose-500/10 cursor-pointer"
+                      title={isRTL ? 'حذف الدليل' : 'Delete'}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>

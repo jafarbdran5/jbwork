@@ -14,6 +14,7 @@ import {
   orderBy
 } from 'firebase/firestore';
 import { ContentItem, ContentStatus } from '../../types';
+import { deleteEntity } from '../../services/database/deleteService';
 import { 
   Share2, 
   Plus, 
@@ -284,10 +285,15 @@ export const ContentStudioModule: React.FC = () => {
                   <button
                     onClick={async () => {
                       if (window.confirm(isRTL ? 'حذف هذا المنشور؟' : 'Delete this post?')) {
-                        await deleteDoc(doc(db, 'content_studio', c.id));
+                        setContents(prev => prev.filter(item => item.id !== c.id));
+                        await deleteEntity('content' as any, c.id, userProfile, {
+                          customTitle: c.title,
+                          reason: 'حذف مسودة محتوى'
+                        });
                       }
                     }}
                     className="p-1.5 text-rose-400 hover:text-rose-300 rounded hover:bg-rose-500/10 cursor-pointer"
+                    title={isRTL ? 'حذف' : 'Delete'}
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>

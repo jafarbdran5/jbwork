@@ -28,13 +28,27 @@ import {
   CasePriority,
   CaseTypeConfig
 } from '../../types';
+import { deleteEntity } from '../../services/database/deleteService';
 import { DEFAULT_CASE_TYPES, DEFAULT_PLATFORMS } from '../../lib/constants';
 import { logAuditAndEvent } from '../../lib/audit';
 import { 
   saveLocalAttachment, 
   getLocalAttachments, 
   removeLocalAttachment,
-  useNetworkStatus 
+  useNetworkStatus,
+  getLocalCases,
+  saveLocalCase,
+  getLocalCaseTasks,
+  saveLocalCaseTask,
+  getLocalCaseReminders,
+  saveLocalCaseReminder,
+  getLocalCaseLinks,
+  saveLocalCaseLink,
+  removeLocalCaseLink,
+  getLocalCaseNotes,
+  saveLocalCaseNote,
+  getLocalCasePayments,
+  saveLocalCasePayment
 } from '../../lib/offlineStore';
 import { 
   ArrowLeft, 
@@ -85,35 +99,36 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
   const { userProfile, canEdit, canViewFinancials, isAdmin } = useAuth();
   const { isOnline } = useNetworkStatus();
 
-  const [caseData, setCaseData] = useState<CaseItem | null>(null);
+  const initialLocalCase = getLocalCases().find((c: any) => c.id === caseId || c.caseNumber === caseId) || null;
+  const [caseData, setCaseData] = useState<CaseItem | null>(initialLocalCase);
   const [caseTypes, setCaseTypes] = useState<CaseTypeConfig[]>(DEFAULT_CASE_TYPES);
   const [teamMembers, setTeamMembers] = useState<UserProfile[]>([]);
   const [activeTab, setActiveTab] = useState<'info' | 'timeline' | 'tasks' | 'reminders' | 'attachments' | 'links' | 'payments' | 'notes' | 'audit'>('info');
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState<boolean>(!initialLocalCase);
 
-  // Subcollections data
+  // Subcollections data initialized with local caches
   const [events, setEvents] = useState<CaseEvent[]>([]);
-  const [tasks, setTasks] = useState<CaseTask[]>([]);
-  const [reminders, setReminders] = useState<CaseReminder[]>([]);
-  const [links, setLinks] = useState<CaseLink[]>([]);
+  const [tasks, setTasks] = useState<CaseTask[]>(() => getLocalCaseTasks(caseId));
+  const [reminders, setReminders] = useState<CaseReminder[]>(() => getLocalCaseReminders(caseId));
+  const [links, setLinks] = useState<CaseLink[]>(() => getLocalCaseLinks(caseId));
   const [attachments, setAttachments] = useState<CaseAttachment[]>([]);
-  const [payments, setPayments] = useState<PaymentRecord[]>([]);
-  const [notes, setNotes] = useState<any[]>([]);
+  const [payments, setPayments] = useState<PaymentRecord[]>(() => getLocalCasePayments(caseId));
+  const [notes, setNotes] = useState<any[]>(() => getLocalCaseNotes(caseId));
 
   // Editing state for Info tab
   const [isEditingInfo, setIsEditingInfo] = useState<boolean>(false);
-  const [editTitle, setEditTitle] = useState<string>('');
-  const [editExternalNumber, setEditExternalNumber] = useState<string>('');
-  const [editStatus, setEditStatus] = useState<CaseStatus>('new');
-  const [editPriority, setEditPriority] = useState<CasePriority>('medium');
-  const [editPlatform, setEditPlatform] = useState<string>('');
-  const [editDescription, setEditDescription] = useState<string>('');
-  const [editNextFollowUp, setEditNextFollowUp] = useState<string>('');
-  const [editClientName, setEditClientName] = useState<string>('');
-  const [editClientPhone, setEditClientPhone] = useState<string>('');
-  const [editDynamicData, setEditDynamicData] = useState<Record<string, any>>({});
-  const [editAgreedAmount, setEditAgreedAmount] = useState<number>(0);
-  const [editCurrency, setEditCurrency] = useState<string>('SYP');
+  const [editTitle, setEditTitle] = useState<string>(initialLocalCase?.title || '');
+  const [editExternalNumber, setEditExternalNumber] = useState<string>(initialLocalCase?.externalNumber || '');
+  const [editStatus, setEditStatus] = useState<CaseStatus>(initialLocalCase?.status || 'new');
+  const [editPriority, setEditPriority] = useState<CasePriority>(initialLocalCase?.priority || 'medium');
+  const [editPlatform, setEditPlatform] = useState<string>(initialLocalCase?.platform || '');
+  const [editDescription, setEditDescription] = useState<string>(initialLocalCase?.description || '');
+  const [editNextFollowUp, setEditNextFollowUp] = useState<string>(initialLocalCase?.nextFollowUp || '');
+  const [editClientName, setEditClientName] = useState<string>(initialLocalCase?.client?.name || '');
+  const [editClientPhone, setEditClientPhone] = useState<string>(initialLocalCase?.client?.phone || '');
+  const [editDynamicData, setEditDynamicData] = useState<Record<string, any>>(initialLocalCase?.typeSpecificData || {});
+  const [editAgreedAmount, setEditAgreedAmount] = useState<number>(initialLocalCase?.agreedAmount || 0);
+  const [editCurrency, setEditCurrency] = useState<string>(initialLocalCase?.currency || 'SYP');
 
   // Quick modals state inside workspace
   const [newTaskTitle, setNewTaskTitle] = useState('');
@@ -147,92 +162,179 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
 
   // Load Main Case Item
   useEffect(() => {
-    const caseDocRef = doc(db, 'cases', caseId);
-    const unsubscribe = onSnapshot(caseDocRef, (snap) => {
-      if (snap.exists()) {
-        const data = { id: snap.id, ...snap.data() } as CaseItem;
-        setCaseData(data);
-        setEditTitle(data.title || '');
-        setEditExternalNumber(data.externalNumber || '');
-        setEditStatus(data.status || 'new');
-        setEditPriority(data.priority || 'medium');
-        setEditPlatform(data.platform || '');
-        setEditDescription(data.description || '');
-        setEditNextFollowUp(data.nextFollowUp || '');
-        setEditClientName(data.client?.name || '');
-        setEditClientPhone(data.client?.phone || '');
-        setEditDynamicData(data.typeSpecificData || {});
-        setEditAgreedAmount(data.agreedAmount || 0);
-        setEditCurrency(data.currency || 'SYP');
-      }
+    const local = getLocalCases().find((c: any) => c.id === caseId || c.caseNumber === caseId);
+    if (local) {
+      setCaseData(local);
+      setEditTitle(local.title || '');
+      setEditExternalNumber(local.externalNumber || '');
+      setEditStatus(local.status || 'new');
+      setEditPriority(local.priority || 'medium');
+      setEditPlatform(local.platform || '');
+      setEditDescription(local.description || '');
+      setEditNextFollowUp(local.nextFollowUp || '');
+      setEditClientName(local.client?.name || '');
+      setEditClientPhone(local.client?.phone || '');
+      setEditDynamicData(local.typeSpecificData || {});
+      setEditAgreedAmount(local.agreedAmount || 0);
+      setEditCurrency(local.currency || 'SYP');
       setLoading(false);
-    });
+    }
 
-    return () => unsubscribe();
+    try {
+      const caseDocRef = doc(db, 'cases', caseId);
+      const unsubscribe = onSnapshot(caseDocRef, (snap) => {
+        if (snap.exists()) {
+          const data = { id: snap.id, ...snap.data() } as CaseItem;
+          setCaseData(data);
+          saveLocalCase(data);
+          setEditTitle(data.title || '');
+          setEditExternalNumber(data.externalNumber || '');
+          setEditStatus(data.status || 'new');
+          setEditPriority(data.priority || 'medium');
+          setEditPlatform(data.platform || '');
+          setEditDescription(data.description || '');
+          setEditNextFollowUp(data.nextFollowUp || '');
+          setEditClientName(data.client?.name || '');
+          setEditClientPhone(data.client?.phone || '');
+          setEditDynamicData(data.typeSpecificData || {});
+          setEditAgreedAmount(data.agreedAmount || 0);
+          setEditCurrency(data.currency || 'SYP');
+        } else {
+          const localItem = getLocalCases().find((c: any) => c.id === caseId || c.caseNumber === caseId);
+          if (localItem) setCaseData(localItem);
+        }
+        setLoading(false);
+      }, (err) => {
+        console.warn('Case workspace onSnapshot fallback:', err);
+        const localItem = getLocalCases().find((c: any) => c.id === caseId || c.caseNumber === caseId);
+        if (localItem) setCaseData(localItem);
+        setLoading(false);
+      });
+
+      return () => unsubscribe();
+    } catch (e) {
+      console.warn('Firestore doc error:', e);
+      const localItem = getLocalCases().find((c: any) => c.id === caseId || c.caseNumber === caseId);
+      if (localItem) setCaseData(localItem);
+      setLoading(false);
+    }
   }, [caseId]);
 
   // Load Timeline Events
   useEffect(() => {
-    const q = query(collection(db, 'caseEvents'), where('caseId', '==', caseId), orderBy('timestamp', 'desc'));
-    const unsubscribe = onSnapshot(q, (snap) => {
-      setEvents(snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseEvent)));
-    }, (err) => console.warn('Events snapshot error:', err));
-    return () => unsubscribe();
+    try {
+      const q = query(collection(db, 'caseEvents'), where('caseId', '==', caseId), orderBy('timestamp', 'desc'));
+      const unsubscribe = onSnapshot(q, (snap) => {
+        setEvents(snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseEvent)));
+      }, (err) => console.warn('Events snapshot fallback:', err));
+      return () => unsubscribe();
+    } catch (e) {}
   }, [caseId]);
 
   // Load Tasks
   useEffect(() => {
-    const q = query(collection(db, 'caseTasks'), where('caseId', '==', caseId));
-    const unsubscribe = onSnapshot(q, (snap) => {
-      setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseTask)));
-    }, (err) => console.warn('Tasks snapshot error:', err));
-    return () => unsubscribe();
+    try {
+      const q = query(collection(db, 'caseTasks'), where('caseId', '==', caseId));
+      const unsubscribe = onSnapshot(q, (snap) => {
+        const cloudTasks = snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseTask));
+        if (cloudTasks.length > 0) {
+          setTasks(cloudTasks);
+          cloudTasks.forEach(t => saveLocalCaseTask(t));
+        } else {
+          setTasks(getLocalCaseTasks(caseId));
+        }
+      }, (err) => {
+        setTasks(getLocalCaseTasks(caseId));
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      setTasks(getLocalCaseTasks(caseId));
+    }
   }, [caseId]);
 
   // Load Reminders
   useEffect(() => {
-    const q = query(collection(db, 'caseReminders'), where('caseId', '==', caseId));
-    const unsubscribe = onSnapshot(q, (snap) => {
-      setReminders(snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseReminder)));
-    }, (err) => console.warn('Reminders snapshot error:', err));
-    return () => unsubscribe();
+    try {
+      const q = query(collection(db, 'caseReminders'), where('caseId', '==', caseId));
+      const unsubscribe = onSnapshot(q, (snap) => {
+        const cloudReminders = snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseReminder));
+        if (cloudReminders.length > 0) {
+          setReminders(cloudReminders);
+          cloudReminders.forEach(r => saveLocalCaseReminder(r));
+        } else {
+          setReminders(getLocalCaseReminders(caseId));
+        }
+      }, (err) => {
+        setReminders(getLocalCaseReminders(caseId));
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      setReminders(getLocalCaseReminders(caseId));
+    }
   }, [caseId]);
 
   // Load Links
   useEffect(() => {
-    const q = query(collection(db, 'caseLinks'), where('caseId', '==', caseId));
-    const unsubscribe = onSnapshot(q, (snap) => {
-      setLinks(snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseLink)));
-    }, (err) => console.warn('Links snapshot error:', err));
-    return () => unsubscribe();
+    try {
+      const q = query(collection(db, 'caseLinks'), where('caseId', '==', caseId));
+      const unsubscribe = onSnapshot(q, (snap) => {
+        const cloudLinks = snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseLink));
+        if (cloudLinks.length > 0) {
+          setLinks(cloudLinks);
+          cloudLinks.forEach(l => saveLocalCaseLink(l));
+        } else {
+          setLinks(getLocalCaseLinks(caseId));
+        }
+      }, (err) => {
+        setLinks(getLocalCaseLinks(caseId));
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      setLinks(getLocalCaseLinks(caseId));
+    }
   }, [caseId]);
 
   // Load Attachments (both Cloud + Local cached)
   useEffect(() => {
-    const q = query(collection(db, 'caseAttachments'), where('caseId', '==', caseId));
-    const unsubscribe = onSnapshot(q, (snap) => {
-      const cloudList = snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseAttachment));
-      const localList = getLocalAttachments(caseId).map(l => ({
-        id: l.id,
-        caseId: l.caseId,
-        fileName: l.fileName,
-        fileType: l.fileType,
-        fileSize: l.fileSize,
-        dataUrl: l.dataUrl,
-        syncStatus: l.syncStatus,
-        uploadedBy: { uid: l.uploaderUid, name: l.uploaderName },
-        createdAt: l.uploadedAt
-      } as CaseAttachment));
+    try {
+      const q = query(collection(db, 'caseAttachments'), where('caseId', '==', caseId));
+      const unsubscribe = onSnapshot(q, (snap) => {
+        const cloudList = snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseAttachment));
+        const localList = getLocalAttachments(caseId).map(l => ({
+          id: l.id,
+          caseId: l.caseId,
+          fileName: l.fileName,
+          fileType: l.fileType,
+          fileSize: l.fileSize,
+          dataUrl: l.dataUrl,
+          syncStatus: l.syncStatus,
+          uploadedBy: { uid: l.uploaderUid, name: l.uploaderName },
+          createdAt: l.uploadedAt
+        } as CaseAttachment));
 
-      // Merge avoiding duplicates
-      const mergedMap = new Map<string, CaseAttachment>();
-      cloudList.forEach(item => mergedMap.set(item.id, item));
-      localList.forEach(item => {
-        if (!mergedMap.has(item.id)) mergedMap.set(item.id, item);
+        // Merge avoiding duplicates
+        const mergedMap = new Map<string, CaseAttachment>();
+        cloudList.forEach(item => mergedMap.set(item.id, item));
+        localList.forEach(item => {
+          if (!mergedMap.has(item.id)) mergedMap.set(item.id, item);
+        });
+        setAttachments(Array.from(mergedMap.values()));
+      }, (err) => {
+        const localList = getLocalAttachments(caseId).map(l => ({
+          id: l.id,
+          caseId: l.caseId,
+          fileName: l.fileName,
+          fileType: l.fileType,
+          fileSize: l.fileSize,
+          dataUrl: l.dataUrl,
+          syncStatus: l.syncStatus,
+          uploadedBy: { uid: l.uploaderUid, name: l.uploaderName },
+          createdAt: l.uploadedAt
+        } as CaseAttachment));
+        setAttachments(localList);
       });
-      setAttachments(Array.from(mergedMap.values()));
-    }, (err) => {
-      console.warn('Attachments fallback to local:', err);
+      return () => unsubscribe();
+    } catch (e) {
       const localList = getLocalAttachments(caseId).map(l => ({
         id: l.id,
         caseId: l.caseId,
@@ -245,26 +347,49 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
         createdAt: l.uploadedAt
       } as CaseAttachment));
       setAttachments(localList);
-    });
-    return () => unsubscribe();
+    }
   }, [caseId]);
 
   // Load Payments
   useEffect(() => {
-    const q = query(collection(db, 'payments'), where('caseId', '==', caseId));
-    const unsubscribe = onSnapshot(q, (snap) => {
-      setPayments(snap.docs.map(d => ({ id: d.id, ...d.data() } as PaymentRecord)));
-    }, (err) => console.warn('Payments snapshot error:', err));
-    return () => unsubscribe();
+    try {
+      const q = query(collection(db, 'payments'), where('caseId', '==', caseId));
+      const unsubscribe = onSnapshot(q, (snap) => {
+        const cloudPayments = snap.docs.map(d => ({ id: d.id, ...d.data() } as PaymentRecord));
+        if (cloudPayments.length > 0) {
+          setPayments(cloudPayments);
+          cloudPayments.forEach(p => saveLocalCasePayment(p));
+        } else {
+          setPayments(getLocalCasePayments(caseId));
+        }
+      }, (err) => {
+        setPayments(getLocalCasePayments(caseId));
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      setPayments(getLocalCasePayments(caseId));
+    }
   }, [caseId]);
 
   // Load Notes
   useEffect(() => {
-    const q = query(collection(db, 'caseNotes'), where('caseId', '==', caseId), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snap) => {
-      setNotes(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, (err) => console.warn('Notes snapshot error:', err));
-    return () => unsubscribe();
+    try {
+      const q = query(collection(db, 'caseNotes'), where('caseId', '==', caseId), orderBy('createdAt', 'desc'));
+      const unsubscribe = onSnapshot(q, (snap) => {
+        const cloudNotes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (cloudNotes.length > 0) {
+          setNotes(cloudNotes);
+          cloudNotes.forEach(n => saveLocalCaseNote(n));
+        } else {
+          setNotes(getLocalCaseNotes(caseId));
+        }
+      }, (err) => {
+        setNotes(getLocalCaseNotes(caseId));
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      setNotes(getLocalCaseNotes(caseId));
+    }
   }, [caseId]);
 
   // Load Team Members
@@ -272,8 +397,7 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
     const loadUsers = async () => {
       try {
         const snap = await getDoc(doc(db, 'settings', 'general'));
-        // Load team members
-        const usersSnap = await onSnapshot(collection(db, 'users'), (users) => {
+        onSnapshot(collection(db, 'users'), (users) => {
           setTeamMembers(users.docs.map(d => d.data() as UserProfile));
         });
       } catch (e) {}
@@ -281,11 +405,32 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
     loadUsers();
   }, []);
 
-  if (loading || !caseData) {
+  if (loading && !caseData) {
     return (
-      <div className="p-8 text-center">
-        <div className="inline-block w-8 h-8 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mb-3" />
+      <div className="p-12 text-center">
+        <div className="inline-block w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mb-3" />
         <p className="text-xs text-slate-400 font-mono">{isRTL ? 'جارٍ فتح مساحة عمل القضية...' : 'Loading case workspace...'}</p>
+      </div>
+    );
+  }
+
+  if (!caseData) {
+    return (
+      <div className="p-12 text-center max-w-md mx-auto bg-white dark:bg-[#18181B] rounded-2xl border border-slate-200 dark:border-[#27272A] shadow-sm">
+        <AlertCircle className="w-12 h-12 text-amber-500 mx-auto mb-3" />
+        <h3 className="text-base font-bold text-slate-900 dark:text-white mb-1">
+          {isRTL ? 'القضية غير موجودة أو تم حذفها' : 'Case not found or deleted'}
+        </h3>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-5">
+          {isRTL ? 'تعذر العثور على ملف القضية المطلوب. يرجى التحقق من الرقم أو الرجوع لقائمة القضايا.' : 'The requested case file could not be found. Please check or return.'}
+        </p>
+        <button
+          onClick={onBack}
+          className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2 rounded-xl transition-all cursor-pointer"
+        >
+          {isRTL ? <ArrowRight className="w-4 h-4" /> : <ArrowLeft className="w-4 h-4" />}
+          <span>{isRTL ? 'الرجوع للقضايا' : 'Back to cases'}</span>
+        </button>
       </div>
     );
   }
@@ -294,7 +439,28 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
 
   // Save Info changes
   const handleSaveInfo = async () => {
-    if (!userProfile) return;
+    if (!userProfile || !caseData) return;
+    const updatedCase: CaseItem = {
+      ...caseData,
+      title: editTitle,
+      externalNumber: editExternalNumber,
+      status: editStatus,
+      priority: editPriority,
+      platform: editPlatform,
+      description: editDescription,
+      nextFollowUp: editNextFollowUp,
+      client: editClientName.trim() ? { name: editClientName.trim(), phone: editClientPhone.trim() } : undefined,
+      typeSpecificData: editDynamicData,
+      agreedAmount: Number(editAgreedAmount) || 0,
+      currency: editCurrency || 'SYP',
+      updatedAt: new Date().toISOString()
+    };
+
+    // Update local immediately
+    setCaseData(updatedCase);
+    saveLocalCase(updatedCase);
+    setIsEditingInfo(false);
+
     try {
       const caseDocRef = doc(db, 'cases', caseId);
       await updateDoc(caseDocRef, {
@@ -320,17 +486,18 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
         entityTitle: editTitle,
         user: userProfile
       });
-
-      setIsEditingInfo(false);
     } catch (e) {
-      console.error('Failed to update case info:', e);
-      alert(isRTL ? 'تعذر حفظ التعديلات حالياً' : 'Failed to save changes');
+      console.warn('Firestore update fallback to local store:', e);
     }
   };
 
   // Quick Status change from header
   const handleQuickStatusChange = async (newStatus: CaseStatus) => {
-    if (!userProfile) return;
+    if (!userProfile || !caseData) return;
+    const updatedCase = { ...caseData, status: newStatus, updatedAt: new Date().toISOString() };
+    setCaseData(updatedCase);
+    saveLocalCase(updatedCase);
+
     try {
       await updateDoc(doc(db, 'cases', caseId), {
         status: newStatus,
@@ -345,22 +512,28 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
         user: userProfile
       });
     } catch (e) {
-      console.error(e);
+      console.warn('Quick status fallback:', e);
     }
   };
 
   // Quick Assign Employee from header
   const handleQuickAssign = async (targetUid: string) => {
-    if (!userProfile) return;
+    if (!userProfile || !caseData) return;
     const targetUser = teamMembers.find(u => u.uid === targetUid);
     if (!targetUser) return;
+
+    const assigned = {
+      uid: targetUser.uid,
+      name: targetUser.displayName,
+      email: targetUser.email
+    };
+    const updatedCase = { ...caseData, assignedTo: assigned, updatedAt: new Date().toISOString() };
+    setCaseData(updatedCase);
+    saveLocalCase(updatedCase);
+
     try {
       await updateDoc(doc(db, 'cases', caseId), {
-        assignedTo: {
-          uid: targetUser.uid,
-          name: targetUser.displayName,
-          email: targetUser.email
-        },
+        assignedTo: assigned,
         updatedAt: serverTimestamp()
       });
       await logAuditAndEvent({
@@ -372,19 +545,39 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
         user: userProfile
       });
     } catch (e) {
-      console.error(e);
+      console.warn('Quick assign fallback:', e);
     }
   };
 
   // Add Task
   const handleAddTask = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTaskTitle.trim() || !userProfile) return;
+    if (!newTaskTitle.trim() || !userProfile || !caseData) return;
+    const taskId = `task_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const newTaskItem: CaseTask = {
+      id: taskId,
+      caseId,
+      caseNumber: caseData.caseNumber,
+      title: newTaskTitle.trim(),
+      priority: newTaskPriority,
+      dueDate: newTaskDueDate || '',
+      status: 'todo',
+      createdAt: new Date().toISOString(),
+      createdBy: { uid: userProfile.uid, name: userProfile.displayName }
+    };
+
+    // Save local
+    saveLocalCaseTask(newTaskItem);
+    setTasks(prev => [newTaskItem, ...prev]);
+    const addedTitle = newTaskTitle.trim();
+    setNewTaskTitle('');
+    setNewTaskDueDate('');
+
     try {
       await addDoc(collection(db, 'caseTasks'), {
         caseId,
         caseNumber: caseData.caseNumber,
-        title: newTaskTitle.trim(),
+        title: addedTitle,
         priority: newTaskPriority,
         dueDate: newTaskDueDate || '',
         status: 'todo',
@@ -393,16 +586,14 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
       });
       await logAuditAndEvent({
         action: 'CREATE_TASK',
-        details: `إضافة مهمة جديدة: ${newTaskTitle}`,
+        details: `إضافة مهمة جديدة: ${addedTitle}`,
         entityType: 'task',
         caseId,
-        entityTitle: newTaskTitle,
+        entityTitle: addedTitle,
         user: userProfile
       });
-      setNewTaskTitle('');
-      setNewTaskDueDate('');
     } catch (e) {
-      console.error(e);
+      console.warn('Add task fallback:', e);
     }
   };
 
@@ -410,6 +601,10 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
   const handleToggleTask = async (task: CaseTask) => {
     if (!userProfile) return;
     const nextStatus = task.status === 'completed' ? 'todo' : 'completed';
+    const updatedTask = { ...task, status: nextStatus, completedAt: nextStatus === 'completed' ? new Date().toISOString() : null };
+    saveLocalCaseTask(updatedTask);
+    setTasks(prev => prev.map(t => t.id === task.id ? updatedTask : t));
+
     try {
       await updateDoc(doc(db, 'caseTasks', task.id), {
         status: nextStatus,
@@ -424,21 +619,44 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
         user: userProfile
       });
     } catch (e) {
-      console.error(e);
+      console.warn('Toggle task fallback:', e);
     }
   };
 
   // Add Reminder
   const handleAddReminder = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newReminderTitle.trim() || !newReminderDate || !userProfile) return;
+    if (!newReminderTitle.trim() || !newReminderDate || !userProfile || !caseData) return;
+    const remId = `rem_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const newRemItem: CaseReminder = {
+      id: remId,
+      caseId,
+      caseNumber: caseData.caseNumber,
+      caseTitle: caseData.title,
+      title: newReminderTitle.trim(),
+      dueDate: newReminderDate,
+      dueTime: newReminderTime,
+      note: newReminderNote.trim(),
+      status: 'upcoming',
+      createdAt: new Date().toISOString(),
+      createdBy: { uid: userProfile.uid, name: userProfile.displayName }
+    };
+
+    saveLocalCaseReminder(newRemItem);
+    setReminders(prev => [newRemItem, ...prev]);
+    const remTitle = newReminderTitle.trim();
+    const remDate = newReminderDate;
+    setNewReminderTitle('');
+    setNewReminderDate('');
+    setNewReminderNote('');
+
     try {
       await addDoc(collection(db, 'caseReminders'), {
         caseId,
         caseNumber: caseData.caseNumber,
         caseTitle: caseData.title,
-        title: newReminderTitle.trim(),
-        dueDate: newReminderDate,
+        title: remTitle,
+        dueDate: remDate,
         dueTime: newReminderTime,
         note: newReminderNote.trim(),
         status: 'upcoming',
@@ -447,17 +665,14 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
       });
       await logAuditAndEvent({
         action: 'CREATE_REMINDER',
-        details: `إنشاء تذكير: ${newReminderTitle} بتاريخ ${newReminderDate}`,
+        details: `إنشاء تذكير: ${remTitle} بتاريخ ${remDate}`,
         entityType: 'reminder',
         caseId,
-        entityTitle: newReminderTitle,
+        entityTitle: remTitle,
         user: userProfile
       });
-      setNewReminderTitle('');
-      setNewReminderDate('');
-      setNewReminderNote('');
     } catch (e) {
-      console.error(e);
+      console.warn('Add reminder fallback:', e);
     }
   };
 
@@ -465,12 +680,29 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
   const handleAddLink = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newLinkUrl.trim() || !userProfile) return;
+    let resolvedUrl = newLinkUrl.trim();
+    if (!resolvedUrl.startsWith('http://') && !resolvedUrl.startsWith('https://')) {
+      resolvedUrl = `https://${resolvedUrl}`;
+    }
+    const resolvedTitle = newLinkTitle.trim() || resolvedUrl;
+    const linkId = `link_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const newLinkItem: CaseLink = {
+      id: linkId,
+      caseId,
+      title: resolvedTitle,
+      url: resolvedUrl,
+      description: newLinkDesc.trim(),
+      createdAt: new Date().toISOString(),
+      createdBy: { uid: userProfile.uid, name: userProfile.displayName }
+    };
+
+    saveLocalCaseLink(newLinkItem);
+    setLinks(prev => [newLinkItem, ...prev]);
+    setNewLinkTitle('');
+    setNewLinkUrl('');
+    setNewLinkDesc('');
+
     try {
-      let resolvedUrl = newLinkUrl.trim();
-      if (!resolvedUrl.startsWith('http://') && !resolvedUrl.startsWith('https://')) {
-        resolvedUrl = `https://${resolvedUrl}`;
-      }
-      const resolvedTitle = newLinkTitle.trim() || resolvedUrl;
       await addDoc(collection(db, 'caseLinks'), {
         caseId,
         title: resolvedTitle,
@@ -487,11 +719,8 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
         entityTitle: resolvedTitle,
         user: userProfile
       });
-      setNewLinkTitle('');
-      setNewLinkUrl('');
-      setNewLinkDesc('');
     } catch (e) {
-      console.error(e);
+      console.warn('Add link fallback:', e);
     }
   };
 
@@ -505,17 +734,36 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
 
     if (lines.length === 0) return;
 
+    const newItems: CaseLink[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i];
+      if (!line.startsWith('http://') && !line.startsWith('https://')) {
+        line = `https://${line}`;
+      }
+      const resolvedTitle = `${isRTL ? 'رابط' : 'Link'} ${links.length + i + 1}`;
+      const item: CaseLink = {
+        id: `link_bulk_${Date.now()}_${i}`,
+        caseId,
+        title: resolvedTitle,
+        url: line,
+        description: '',
+        createdAt: new Date().toISOString(),
+        createdBy: { uid: userProfile.uid, name: userProfile.displayName }
+      };
+      saveLocalCaseLink(item);
+      newItems.push(item);
+    }
+
+    setLinks(prev => [...newItems, ...prev]);
+    setBulkLinksText('');
+    setShowBulkLinksModal(false);
+
     try {
-      for (let i = 0; i < lines.length; i++) {
-        let line = lines[i];
-        if (!line.startsWith('http://') && !line.startsWith('https://')) {
-          line = `https://${line}`;
-        }
-        const resolvedTitle = `${isRTL ? 'رابط' : 'Link'} ${links.length + i + 1}`;
+      for (const item of newItems) {
         await addDoc(collection(db, 'caseLinks'), {
           caseId,
-          title: resolvedTitle,
-          url: line,
+          title: item.title,
+          url: item.url,
           description: '',
           createdAt: serverTimestamp(),
           createdBy: { uid: userProfile.uid, name: userProfile.displayName }
@@ -530,19 +778,18 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
         entityTitle: `${lines.length} روابط`,
         user: userProfile
       });
-
-      setBulkLinksText('');
-      setShowBulkLinksModal(false);
     } catch (e) {
-      console.error('Failed to bulk add links:', e);
+      console.warn('Bulk add links fallback:', e);
     }
   };
 
   // Delete Link
   const handleDeleteLink = async (linkId: string, linkTitle: string) => {
-    if (!canEdit || !userProfile) return;
-    const confirm = window.confirm(isRTL ? `هل أنت متأكد من حذف الرابط "${linkTitle}"؟` : `Delete link "${linkTitle}"?`);
-    if (!confirm) return;
+    if (!canEdit || !userProfile || !caseData) return;
+
+    removeLocalCaseLink(caseId, linkId);
+    setLinks(prev => prev.filter(l => l.id !== linkId));
+
     try {
       await deleteDoc(doc(db, 'caseLinks', linkId));
       await logAuditAndEvent({
@@ -554,7 +801,7 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
         user: userProfile
       });
     } catch (err) {
-      console.error('Failed to delete link:', err);
+      console.warn('Delete link fallback:', err);
     }
   };
 
@@ -568,19 +815,22 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
         const base64Data = event.target?.result as string;
         const fileId = `att_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
-        // 1. Save in local offline store
-        saveLocalAttachment({
+        const newAttItem = {
           id: fileId,
           caseId,
           fileName: file.name,
           fileType: file.type,
           fileSize: file.size,
           dataUrl: base64Data,
-          syncStatus: isOnline ? 'synced' : 'local',
+          syncStatus: isOnline ? ('synced' as const) : ('local' as const),
           uploadedAt: new Date().toISOString(),
           uploaderName: userProfile.displayName,
           uploaderUid: userProfile.uid,
-        });
+        };
+
+        // 1. Save in local offline store & React state immediately
+        saveLocalAttachment(newAttItem);
+        setAttachments(prev => [newAttItem, ...prev]);
 
         // 2. If online, save metadata in Firestore
         try {
@@ -621,33 +871,44 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
 
   // Delete Attachment
   const handleDeleteAttachment = async (attId: string, fileName: string) => {
-    if (!canEdit || !userProfile) return;
-    const confirm = window.confirm(isRTL ? `هل أنت متأكد من حذف المرفق "${fileName}"؟` : `Delete attachment "${fileName}"?`);
-    if (!confirm) return;
+    if (!canEdit || !userProfile || !caseData) return;
+
+    // Remove from local storage and update React state immediately
+    removeLocalAttachment(attId);
+    setAttachments(prev => prev.filter(a => a.id !== attId));
+
     try {
-      await deleteDoc(doc(db, 'caseAttachments', attId));
-      removeLocalAttachment(attId);
-      await logAuditAndEvent({
-        action: 'DELETE_ATTACHMENT',
-        details: `حذف المرفق: ${fileName}`,
-        entityType: 'attachment',
-        caseId,
-        entityTitle: fileName,
-        user: userProfile
+      await deleteEntity('attachment', attId, userProfile, {
+        customTitle: fileName,
+        reason: `حذف مرفق من القضية ${caseData.caseNumber}`
       });
+      await deleteDoc(doc(db, 'caseAttachments', attId));
     } catch (err) {
-      console.error('Failed to delete attachment:', err);
+      console.warn('Delete attachment fallback:', err);
     }
   };
 
   // Add Note
   const handleAddNote = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newNoteContent.trim() || !userProfile) return;
+    if (!newNoteContent.trim() || !userProfile || !caseData) return;
+    const noteId = `note_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const newNoteItem = {
+      id: noteId,
+      caseId,
+      content: newNoteContent.trim(),
+      author: { uid: userProfile.uid, name: userProfile.displayName },
+      createdAt: new Date().toISOString()
+    };
+    saveLocalCaseNote(newNoteItem);
+    setNotes(prev => [newNoteItem, ...prev]);
+    const noteText = newNoteContent.trim();
+    setNewNoteContent('');
+
     try {
       await addDoc(collection(db, 'caseNotes'), {
         caseId,
-        content: newNoteContent.trim(),
+        content: noteText,
         author: { uid: userProfile.uid, name: userProfile.displayName },
         createdAt: serverTimestamp(),
       });
@@ -659,78 +920,95 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
         entityTitle: caseData.title,
         user: userProfile
       });
-      setNewNoteContent('');
     } catch (e) {
-      console.error(e);
+      console.warn('Add note fallback:', e);
     }
   };
 
   // Add Payment
   const handleAddPayment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPaymentAmount || !userProfile) return;
+    if (!newPaymentAmount || !userProfile || !caseData) return;
+    const payId = `pay_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const newPayItem: PaymentRecord = {
+      id: payId,
+      caseId,
+      caseNumber: caseData.caseNumber,
+      caseTitle: caseData.title,
+      clientName: caseData.client?.name || '',
+      amount: Number(newPaymentAmount),
+      paymentAmount: Number(newPaymentAmount),
+      currency: newPaymentCurrency,
+      paymentDate: newPaymentDate,
+      paymentMethod: newPaymentMethod as any,
+      note: newPaymentNote.trim(),
+      recordedBy: { uid: userProfile.uid, name: userProfile.displayName },
+      createdAt: new Date().toISOString()
+    };
+
+    saveLocalCasePayment(newPayItem);
+    setPayments(prev => [newPayItem, ...prev]);
+
+    // Update case totalPaid locally
+    const currentPaid = caseData.totalPaid || 0;
+    const updatedTotalPaid = currentPaid + Number(newPaymentAmount);
+    const updatedCase = { ...caseData, totalPaid: updatedTotalPaid, updatedAt: new Date().toISOString() };
+    setCaseData(updatedCase);
+    saveLocalCase(updatedCase);
+
+    const payAmt = newPaymentAmount;
+    const payCur = newPaymentCurrency;
+    const payDate = newPaymentDate;
+    const payMethod = newPaymentMethod;
+    const payNote = newPaymentNote.trim();
+    setNewPaymentAmount(0);
+    setNewPaymentNote('');
+
     try {
       await addDoc(collection(db, 'payments'), {
         caseId,
         caseNumber: caseData.caseNumber,
         caseTitle: caseData.title,
         clientName: caseData.client?.name || '',
-        paymentAmount: Number(newPaymentAmount),
-        currency: newPaymentCurrency,
-        paymentDate: newPaymentDate,
-        paymentMethod: newPaymentMethod,
-        note: newPaymentNote.trim(),
+        paymentAmount: Number(payAmt),
+        currency: payCur,
+        paymentDate: payDate,
+        paymentMethod: payMethod,
+        note: payNote,
         recordedBy: { uid: userProfile.uid, name: userProfile.displayName },
         createdAt: serverTimestamp()
       });
 
-      // Update total paid on case
-      const currentPaid = caseData.totalPaid || 0;
       await updateDoc(doc(db, 'cases', caseId), {
-        totalPaid: currentPaid + Number(newPaymentAmount),
+        totalPaid: updatedTotalPaid,
         updatedAt: serverTimestamp()
       });
 
       await logAuditAndEvent({
         action: 'CREATE_PAYMENT',
-        details: `تسجيل دفعة بقيمة: ${newPaymentAmount} ${newPaymentCurrency}`,
+        details: `تسجيل دفعة بقيمة: ${payAmt} ${payCur}`,
         entityType: 'payment',
         caseId,
-        entityTitle: `${newPaymentAmount} ${newPaymentCurrency}`,
+        entityTitle: `${payAmt} ${payCur}`,
         user: userProfile
       });
-
-      setNewPaymentAmount(0);
-      setNewPaymentNote('');
     } catch (e) {
-      console.error(e);
+      console.warn('Add payment fallback:', e);
     }
   };
 
   // Soft Delete Case
   const handleSoftDelete = async () => {
-    if (!isAdmin || !userProfile) return;
-    const confirm = window.confirm(isRTL ? 'هل أنت متأكد من نقل هذه القضية إلى سلة المحذوفات؟' : 'Move this case to trash?');
+    if (!caseData) return;
+    const confirm = window.confirm(isRTL ? `هل أنت متأكد من نقل القضية (${caseData.caseNumber || ''} - ${caseData.title || ''}) إلى سلة المهملات؟` : 'Move this case to Recycle Bin?');
     if (!confirm) return;
 
-    try {
-      await updateDoc(doc(db, 'cases', caseId), {
-        isDeleted: true,
-        deletedAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
-      });
-      await logAuditAndEvent({
-        action: 'DELETE_CASE',
-        details: `نقل القضية إلى سلة المحذوفات: ${caseData.caseNumber}`,
-        entityType: 'case',
-        caseId,
-        entityTitle: caseData.title,
-        user: userProfile
-      });
-      onBack();
-    } catch (e) {
-      console.error(e);
-    }
+    await deleteEntity('case', caseId, userProfile, {
+      customTitle: `${caseData.caseNumber || ''} - ${caseData.title || ''}`,
+      reason: 'نقل القضية من مساحة العمل إلى سلة المهملات'
+    });
+
+    onBack();
   };
 
   // Helper copy link
@@ -759,7 +1037,7 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
         </button>
 
         <div className="flex items-center gap-2">
-          {isAdmin && (
+          {canEdit && (
             <button
               onClick={handleSoftDelete}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-950/40 border border-red-900/60 text-red-300 hover:bg-red-900/60 text-xs font-semibold transition-colors cursor-pointer"

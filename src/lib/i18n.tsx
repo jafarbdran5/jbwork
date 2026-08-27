@@ -11,12 +11,12 @@ interface Translations {
 
 const translations: Translations = {
   // Brand & Header
-  appName: { ar: 'JB Work', en: 'JB Work' },
-  appSubtitle: { ar: 'نظام عمل جعفر بدران الداخلي', en: 'Jaafar Bdran Internal Work System' },
-  appDesc: { ar: 'منظومة داخلية لإدارة القضايا والعمل والمهام والمتابعة', en: 'Private Internal Case & Work Management System' },
-  privateWorkspaceBadge: { ar: 'نظام عمل خاص وداخلي', en: 'Private Internal Workspace' },
-  footerCopyright: { ar: '© جعفر بدران — JB Work', en: '© Jaafar Bdran — JB Work' },
-  footerNote: { ar: 'نظام خاص للاستخدام الداخلي والمصرح به فقط', en: 'Private internal system for authorized use only' },
+  appName: { ar: 'منظومة جعفر بدران', en: 'JAAFAR BDRAN SYSTEM' },
+  appSubtitle: { ar: 'نظام جعفر بدران لإدارة العمل والحياة', en: 'Jaafar Bdran Life & Case Operating System' },
+  appDesc: { ar: 'منظومة شخصية وإدارية متكاملة فائقة السرعة تعمل أوفلاين', en: 'High-speed Offline-First Case & Life Operating System' },
+  privateWorkspaceBadge: { ar: 'منظومة جعفر بدران المستقلة', en: 'Jaafar Bdran Autonomous OS' },
+  footerCopyright: { ar: '© جعفر بدران — JAAFAR BDRAN SYSTEM', en: '© Jaafar Bdran — JAAFAR BDRAN SYSTEM' },
+  footerNote: { ar: 'نظام مستقل وخاص للمشرف العام وفريق العمل المصرح به', en: 'Autonomous private operating system for the Primary Administrator' },
 
   // Navigation
   navDashboard: { ar: 'لوحة التحكم', en: 'Dashboard' },
@@ -136,7 +136,7 @@ const translations: Translations = {
 
   // Empty states
   noCasesFound: { ar: 'لا توجد قضايا بعد', en: 'No cases found' },
-  noCasesSub: { ar: 'ابدأ بإضافة أول قضية إلى نظام عمل جعفر بدران بنقرة واحدة.', en: 'Start by creating the first case in the JB Work system with a single click.' },
+  noCasesSub: { ar: 'ابدأ بإضافة أول قضية إلى منظومة جعفر بدران بنقرة واحدة.', en: 'Start by creating the first case in the Jaafar Bdran System with a single click.' },
   noTasksFound: { ar: 'لا توجد مهام حالياً', en: 'No tasks currently' },
   noRemindersToday: { ar: 'لا توجد تذكيرات مستحقة اليوم', en: 'No reminders due today' },
   noClientsFound: { ar: 'لا يوجد عملاء مسجلين', en: 'No clients registered' },

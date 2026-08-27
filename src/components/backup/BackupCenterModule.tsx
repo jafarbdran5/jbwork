@@ -25,6 +25,37 @@ export const BackupCenterModule: React.FC = () => {
   const [isExporting, setIsExporting] = useState(false);
   const [exportSuccess, setExportSuccess] = useState(false);
   const [exportedCollectionsCount, setExportedCollectionsCount] = useState(0);
+  const [restoreStatus, setRestoreStatus] = useState<string | null>(null);
+
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const handleRestoreJSON = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const data = JSON.parse(event.target?.result as string);
+        if (data.localStorage && Array.isArray(data.localStorage) && data.localStorage[0]) {
+          const ls = data.localStorage[0];
+          Object.keys(ls).forEach((key) => {
+            if (ls[key]) {
+              localStorage.setItem(key, ls[key]);
+            }
+          });
+        }
+        setRestoreStatus(isRTL ? 'تمت استعادة البيانات المحلية بنجاح! يتم الآن تحديث الصفحة...' : 'Local data restored successfully! Reloading...');
+        setTimeout(() => {
+          window.location.reload();
+        }, 1200);
+      } catch (err) {
+        console.error('Failed to parse backup JSON', err);
+        setRestoreStatus(isRTL ? 'ملف غير صالح، يرجى التأكد من اختيار ملف JSON صحيح.' : 'Invalid file, please upload a valid JSON backup.');
+      }
+    };
+    reader.readAsText(file);
+  };
 
   const collectionsToBackup = [
     'cases',
@@ -57,7 +88,15 @@ export const BackupCenterModule: React.FC = () => {
           version: '2.0.0',
           exportedAt: new Date().toISOString(),
           exportedBy: userProfile?.displayName || 'Jaafar Bdran',
-          system: 'JB Work OS'
+          system: 'JAAFAR BDRAN SYSTEM | Life & Case OS'
+        }],
+        localStorage: [{
+          jb_saved_public_sheets: localStorage.getItem('jb_saved_public_sheets') || '',
+          jb_life_habits: localStorage.getItem('jb_life_habits') || '',
+          jb_life_goals: localStorage.getItem('jb_life_goals') || '',
+          jb_life_journal: localStorage.getItem('jb_life_journal') || '',
+          jb_life_finances: localStorage.getItem('jb_life_finances') || '',
+          jb_my_day_plan: localStorage.getItem('jb_my_day_plan') || ''
         }]
       };
 
@@ -140,15 +179,40 @@ export const BackupCenterModule: React.FC = () => {
           </div>
         </div>
 
-        <button
-          onClick={handleExportFullBackup}
-          disabled={isExporting}
-          className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors cursor-pointer"
-        >
-          {isExporting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <HardDriveDownload className="w-4 h-4" />}
-          {isRTL ? 'تحميل نسخة احتياطية كاملة (JSON)' : 'Download Full Backup (JSON)'}
-        </button>
+        <div className="flex items-center gap-3">
+          <input 
+            type="file" 
+            ref={fileInputRef} 
+            onChange={handleRestoreJSON} 
+            accept=".json" 
+            className="hidden" 
+          />
+          
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center gap-2 px-4 py-2.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-xs font-semibold rounded-lg shadow-sm transition-colors cursor-pointer"
+          >
+            <Upload className="w-4 h-4" />
+            {isRTL ? 'استيراد واستعادة (JSON)' : 'Restore Backup (JSON)'}
+          </button>
+
+          <button
+            onClick={handleExportFullBackup}
+            disabled={isExporting}
+            className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold rounded-lg shadow-sm transition-colors cursor-pointer"
+          >
+            {isExporting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <HardDriveDownload className="w-4 h-4" />}
+            {isRTL ? 'تحميل نسخة احتياطية كاملة (JSON)' : 'Download Full Backup (JSON)'}
+          </button>
+        </div>
       </div>
+
+      {restoreStatus && (
+        <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/30 flex items-center gap-3 text-blue-400 text-xs">
+          <CheckCircle2 className="w-5 h-5 shrink-0" />
+          <span>{restoreStatus}</span>
+        </div>
+      )}
 
       {exportSuccess && (
         <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center gap-3 text-emerald-400 text-xs">

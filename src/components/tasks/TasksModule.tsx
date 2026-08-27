@@ -5,7 +5,8 @@ import { db } from '../../lib/firebase';
 import { collection, query, orderBy, onSnapshot, updateDoc, doc, serverTimestamp } from 'firebase/firestore';
 import { CaseTask } from '../../types';
 import { logAuditAndEvent } from '../../lib/audit';
-import { CheckSquare, CheckCircle2, Circle, Clock, Tag, User, Search, Filter } from 'lucide-react';
+import { deleteEntity } from '../../services/database/deleteService';
+import { CheckSquare, CheckCircle2, Circle, Clock, Tag, User, Search, Filter, Trash2 } from 'lucide-react';
 
 interface TasksModuleProps {
   onSelectCase?: (caseId: string) => void;
@@ -54,7 +55,19 @@ export const TasksModule: React.FC<TasksModuleProps> = ({ onSelectCase }) => {
     }
   };
 
+  const handleDeleteTask = async (e: React.MouseEvent, task: CaseTask) => {
+    e.stopPropagation();
+    if (!window.confirm(isRTL ? `هل أنت متأكد من حذف المهمة: ${task.title}؟` : `Delete task: ${task.title}?`)) return;
+
+    setTasks(prev => prev.filter(t => t.id !== task.id));
+    await deleteEntity('task', task.id, userProfile, {
+      customTitle: task.title,
+      reason: `حذف مهمة من قسم المهام`
+    });
+  };
+
   const filtered = tasks.filter(t => {
+    if (t.isDeleted || (t as any)._deleted) return false;
     if (statusFilter !== 'all' && t.status !== statusFilter) return false;
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
@@ -177,13 +190,26 @@ export const TasksModule: React.FC<TasksModuleProps> = ({ onSelectCase }) => {
                 </div>
               </div>
 
-              <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase shrink-0 ${
-                task.priority === 'urgent' ? 'bg-red-950 text-red-300 border border-red-800' :
-                task.priority === 'high' ? 'bg-orange-950 text-orange-300 border border-orange-800' :
-                'bg-slate-800 text-slate-400 border border-slate-700'
-              }`}>
-                {t(`priority_${task.priority}`)}
-              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase ${
+                  task.priority === 'urgent' ? 'bg-red-950 text-red-300 border border-red-800' :
+                  task.priority === 'high' ? 'bg-orange-950 text-orange-300 border border-orange-800' :
+                  'bg-slate-800 text-slate-400 border border-slate-700'
+                }`}>
+                  {t(`priority_${task.priority}`)}
+                </span>
+
+                {canEdit && (
+                  <button
+                    type="button"
+                    onClick={(e) => handleDeleteTask(e, task)}
+                    className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 border border-transparent hover:border-rose-900/40 transition-colors cursor-pointer"
+                    title={isRTL ? 'حذف المهمة' : 'Delete task'}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
             </div>
           ))}
         </div>

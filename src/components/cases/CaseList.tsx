@@ -5,6 +5,8 @@ import { db } from '../../lib/firebase';
 import { collection, query, where, orderBy, onSnapshot } from 'firebase/firestore';
 import { CaseItem, CaseTypeConfig, PlatformConfig, UserProfile, CaseStatus, CasePriority } from '../../types';
 import { DEFAULT_CASE_TYPES, DEFAULT_PLATFORMS } from '../../lib/constants';
+import { getLocalCases, saveLocalCase } from '../../lib/offlineStore';
+import { deleteEntity } from '../../services/database/deleteService';
 import { 
   Search, 
   Filter, 
@@ -21,7 +23,8 @@ import {
   X,
   ExternalLink,
   Phone,
-  Coins
+  Coins,
+  Trash2
 } from 'lucide-react';
 
 interface CaseListProps {
@@ -38,8 +41,8 @@ export const CaseList: React.FC<CaseListProps> = ({
   const { t, isRTL } = useI18n();
   const { userProfile, canEdit } = useAuth();
 
-  const [cases, setCases] = useState<CaseItem[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [cases, setCases] = useState<CaseItem[]>(() => getLocalCases().filter(c => !c.isDeleted && !(c as any)._deleted));
+  const [loading, setLoading] = useState<boolean>(() => getLocalCases().filter(c => !c.isDeleted && !(c as any)._deleted).length === 0);
   const [searchQuery, setSearchQuery] = useState<string>('');
   
   // Quick Filter
@@ -56,28 +59,79 @@ export const CaseList: React.FC<CaseListProps> = ({
   const [platforms, setPlatforms] = useState<PlatformConfig[]>(DEFAULT_PLATFORMS);
   const [teamMembers, setTeamMembers] = useState<UserProfile[]>([]);
 
-  // Subscribe to Cases
+  // Subscribe to Cases & Live Deletion Events
   useEffect(() => {
-    let q = query(
-      collection(db, 'cases'),
-      where('isDeleted', '==', false),
-      orderBy('createdAt', 'desc')
-    );
+    const syncLocal = () => {
+      const local = getLocalCases().filter(c => !c.isDeleted && !(c as any)._deleted);
+      setCases(local);
+    };
+
+    const handleDataChanged = (e: any) => {
+      if (e.detail?.entityType === 'case' || e.detail?.type) {
+        syncLocal();
+      }
+    };
+
+    window.addEventListener('jb_data_changed', handleDataChanged);
+    window.addEventListener('jb_entity_deleted', handleDataChanged);
+    window.addEventListener('jb_entity_restored', handleDataChanged);
+
+    const q = query(collection(db, 'cases'));
 
     const unsubscribe = onSnapshot(q, (snap) => {
-      const list = snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseItem));
-      setCases(list);
+      const list = snap.docs
+        .map(d => ({ id: d.id, ...d.data() } as CaseItem))
+        .filter(c => !c.isDeleted && !(c as any)._deleted)
+        .sort((a, b) => {
+          const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return timeB - timeA;
+        });
+
+      if (list.length > 0) {
+        setCases(list);
+        list.forEach(c => saveLocalCase(c));
+      } else {
+        syncLocal();
+      }
       setLoading(false);
     }, (err) => {
-      console.warn('Cases listener fallback:', err);
+      console.warn('CaseList query fallback:', err);
+      syncLocal();
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      window.removeEventListener('jb_data_changed', handleDataChanged);
+      window.removeEventListener('jb_entity_deleted', handleDataChanged);
+      window.removeEventListener('jb_entity_restored', handleDataChanged);
+    };
   }, []);
+
+  // Quick Direct Delete Handler
+  const handleDeleteCase = async (e: React.MouseEvent, caseItem: CaseItem) => {
+    e.stopPropagation();
+
+    const confirmMsg = isRTL 
+      ? `هل أنت متأكد من نقل القضية (${caseItem.caseNumber || ''} - ${caseItem.title || ''}) إلى سلة المهملات؟`
+      : `Move case (${caseItem.caseNumber || ''} - ${caseItem.title || ''}) to Recycle Bin?`;
+    
+    if (!window.confirm(confirmMsg)) return;
+
+    // 1. Immediately remove from React state for zero-latency UI
+    setCases(prev => prev.filter(c => c.id !== caseItem.id && c.caseNumber !== caseItem.caseNumber));
+
+    // 2. Call unified deletion service
+    await deleteEntity('case', caseItem.id, userProfile, {
+      customTitle: `${caseItem.caseNumber || ''} - ${caseItem.title || ''}`,
+      reason: 'حذف مباشر من قائمة القضايا'
+    });
+  };
 
   // Filter cases
   const filteredCases = cases.filter(item => {
+    if (item.isDeleted || (item as any)._deleted) return false;
     // 1. My cases check
     if (myCasesOnly && userProfile && item.assignedTo?.uid !== userProfile.uid) {
       return false;
@@ -421,6 +475,18 @@ export const CaseList: React.FC<CaseListProps> = ({
                   }`}>
                     {t(`priority_${c.priority}`)}
                   </span>
+
+                  {/* Direct Delete Button for Editors */}
+                  {canEdit && (
+                    <button
+                      type="button"
+                      onClick={(e) => handleDeleteCase(e, c)}
+                      className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 border border-transparent hover:border-rose-900/40 transition-colors cursor-pointer"
+                      title={isRTL ? 'نقل القضية إلى سلة المهملات' : 'Move to Recycle Bin'}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
 
                   <div className="text-slate-500 group-hover:text-cyan-400 transition-colors ps-1">
                     <ChevronRight className={`w-4 h-4 ${isRTL ? 'rotate-180' : ''}`} />

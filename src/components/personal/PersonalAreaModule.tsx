@@ -14,6 +14,7 @@ import {
   orderBy
 } from 'firebase/firestore';
 import { PersonalIdea, PersonalGoal, PersonalNote, CasePriority } from '../../types';
+import { deleteEntity } from '../../services/database/deleteService';
 import { 
   Lock, 
   Plus, 
@@ -328,10 +329,15 @@ export const PersonalAreaModule: React.FC = () => {
                     <button
                       onClick={async () => {
                         if (window.confirm(isRTL ? 'حذف هذه الفكرة؟' : 'Delete idea?')) {
-                          await deleteDoc(doc(db, 'personal_ideas', idea.id));
+                          setIdeas(prev => prev.filter(i => i.id !== idea.id));
+                          await deleteEntity('personal_idea', idea.id, userProfile, {
+                            customTitle: idea.title,
+                            reason: 'حذف فكرة شخصية'
+                          });
                         }
                       }}
-                      className="text-rose-400 hover:text-rose-300 p-1"
+                      className="text-rose-400 hover:text-rose-300 p-1 cursor-pointer"
+                      title={isRTL ? 'حذف الفكرة' : 'Delete'}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -387,18 +393,20 @@ export const PersonalAreaModule: React.FC = () => {
                         <button
                           onClick={async () => {
                             const updated = (g.currentValue || 0) + 1;
+                            setGoals(prev => prev.map(item => item.id === g.id ? { ...item, currentValue: updated } : item));
                             await updateDoc(doc(db, 'personal_goals', g.id), { currentValue: updated });
                           }}
-                          className="px-2 py-1 bg-[#27272A] hover:bg-[#3F3F46] text-white text-[11px] rounded"
+                          className="px-2 py-1 bg-[#27272A] hover:bg-[#3F3F46] text-white text-[11px] rounded cursor-pointer"
                         >
                           +1 {g.unit}
                         </button>
                         <button
                           onClick={async () => {
                             const updated = Math.max(0, (g.currentValue || 0) - 1);
+                            setGoals(prev => prev.map(item => item.id === g.id ? { ...item, currentValue: updated } : item));
                             await updateDoc(doc(db, 'personal_goals', g.id), { currentValue: updated });
                           }}
-                          className="px-2 py-1 bg-[#27272A] hover:bg-[#3F3F46] text-white text-[11px] rounded"
+                          className="px-2 py-1 bg-[#27272A] hover:bg-[#3F3F46] text-white text-[11px] rounded cursor-pointer"
                         >
                           -1
                         </button>
@@ -407,10 +415,15 @@ export const PersonalAreaModule: React.FC = () => {
                       <button
                         onClick={async () => {
                           if (window.confirm(isRTL ? 'حذف هذا الهدف؟' : 'Delete goal?')) {
-                            await deleteDoc(doc(db, 'personal_goals', g.id));
+                            setGoals(prev => prev.filter(item => item.id !== g.id));
+                            await deleteEntity('personal_goal', g.id, userProfile, {
+                              customTitle: g.title,
+                              reason: 'حذف هدف شخصي'
+                            });
                           }
                         }}
-                        className="text-rose-400 hover:text-rose-300 p-1"
+                        className="text-rose-400 hover:text-rose-300 p-1 cursor-pointer"
+                        title={isRTL ? 'حذف الهدف' : 'Delete'}
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -447,10 +460,15 @@ export const PersonalAreaModule: React.FC = () => {
                     <button
                       onClick={async () => {
                         if (window.confirm(isRTL ? 'حذف هذه الملاحظة؟' : 'Delete note?')) {
-                          await deleteDoc(doc(db, 'personal_notes', n.id));
+                          setNotes(prev => prev.filter(item => item.id !== n.id));
+                          await deleteEntity('personal_note', n.id, userProfile, {
+                            customTitle: n.title,
+                            reason: 'حذف ملاحظة شخصية'
+                          });
                         }
                       }}
-                      className="text-rose-400 hover:text-rose-300 p-1"
+                      className="text-rose-400 hover:text-rose-300 p-1 cursor-pointer"
+                      title={isRTL ? 'حذف الملاحظة' : 'Delete'}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>

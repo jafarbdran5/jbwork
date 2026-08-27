@@ -13,6 +13,7 @@ import {
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../lib/auth';
 import { useI18n } from '../../lib/i18n';
+import { deleteEntity } from '../../services/database/deleteService';
 import { 
   Wallet, 
   TrendingUp, 
@@ -301,13 +302,31 @@ export const MyFinancesModule: React.FC = () => {
     }
   };
 
-  const handleDeleteItem = async (col: string, id: string) => {
-    if (!confirm(isRTL ? 'هل أنت متأكد من الحذف؟' : 'Are you sure you want to delete this item?')) return;
+  const handleDeleteItem = async (col: string, id: string, title?: string) => {
+    if (!confirm(isRTL ? 'هل أنت متأكد من الحذف ونقل العنصر إلى سلة المهملات؟' : 'Are you sure you want to delete this item?')) return;
+    
+    // 1. Immediately update React state for instant UI feedback
+    if (col === 'personal_income') {
+      setIncomes(prev => prev.filter(i => i.id !== id));
+    } else if (col === 'personal_expenses') {
+      setExpenses(prev => prev.filter(e => e.id !== id));
+    } else if (col === 'inventory') {
+      setInventory(prev => prev.filter(inv => inv.id !== id));
+    } else if (col === 'assets') {
+      setAssets(prev => prev.filter(a => a.id !== id));
+    }
+
+    // 2. Call unified deletion service
+    const entityType = (col === 'personal_income' ? 'payment' : col === 'personal_expenses' ? 'expense' : col) as any;
+    await deleteEntity(entityType, id, userProfile, {
+      customTitle: title || id,
+      reason: `حذف من ${col}`
+    });
+
+    // 3. Fallback direct deleteDoc
     try {
       await deleteDoc(doc(db, col, id));
-    } catch (err) {
-      console.error('Error deleting item:', err);
-    }
+    } catch (_) {}
   };
 
   if (!isSuperAdmin) {

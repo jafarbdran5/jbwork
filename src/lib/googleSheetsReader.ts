@@ -55,6 +55,7 @@ export interface SavedPublicSheet {
   activeTabName?: string;
   tabs?: SheetWorksheetTab[];
   category: string;
+  targetModule?: 'cases' | 'clients' | 'financials' | 'consultations' | 'requests' | 'general';
   tags?: string[];
   color?: string;
   createdAt: string;
@@ -104,14 +105,147 @@ export function extractSheetInfo(inputUrl: string): { sheetId: string | null; gi
   };
 }
 
+export interface DiscoveredTabsResult {
+  sheetId: string;
+  title: string;
+  tabs: SheetWorksheetTab[];
+}
+
 /**
- * Discovers worksheet tabs from a Google Spreadsheet
+ * Discovers all worksheet tabs from a Google Spreadsheet using server proxy + API + multiple fallbacks
  */
-export async function discoverSheetTabs(sheetId: string): Promise<SheetWorksheetTab[]> {
+export async function discoverSheetTabs(sheetIdOrUrl: string): Promise<SheetWorksheetTab[]> {
+  const result = await discoverSpreadsheetMetadata(sheetIdOrUrl);
+  return result.tabs;
+}
+
+/**
+ * Comprehensive discovery of Spreadsheet Title and all its Worksheet Tabs
+ */
+export async function discoverSpreadsheetMetadata(sheetIdOrUrl: string): Promise<DiscoveredTabsResult> {
+  const { sheetId } = extractSheetInfo(sheetIdOrUrl);
+  if (!sheetId) {
+    return {
+      sheetId: '',
+      title: 'Google Spreadsheet',
+      tabs: [{ gid: '0', name: 'الورقة 1 (الرئيسية)', isDefault: true }]
+    };
+  }
+
   const discovered: SheetWorksheetTab[] = [];
   const visitedGids = new Set<string>();
+  const visitedNames = new Set<string>();
+  let sheetTitle = '';
 
-  // Attempt 1: Fetch htmlview or pubhtml
+  const addTab = (gid: string, name: string, rowCount?: number) => {
+    const cleanGid = String(gid || '0').trim();
+    const cleanName = (name || '').trim();
+    if (!cleanName) return;
+    if (visitedGids.has(cleanGid) && visitedNames.has(cleanName.toLowerCase())) return;
+
+    visitedGids.add(cleanGid);
+    visitedNames.add(cleanName.toLowerCase());
+    discovered.push({
+      gid: cleanGid,
+      name: cleanName,
+      isDefault: cleanGid === '0' || discovered.length === 0,
+      rowCount
+    });
+  };
+
+  // Strategy 1: Server-side API endpoint (/api/sheets/discover-tabs)
+  try {
+    const serverUrl = `/api/sheets/discover-tabs?sheetId=${encodeURIComponent(sheetId)}`;
+    const res = await fetch(serverUrl, { headers: { 'Accept': 'application/json' } });
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.success && Array.isArray(data?.tabs) && data.tabs.length > 0) {
+        if (data.title) sheetTitle = data.title;
+        data.tabs.forEach((t: any) => {
+          addTab(String(t.gid), String(t.name), t.rowCount);
+        });
+        if (discovered.length > 0) {
+          return { sheetId, title: sheetTitle || 'Google Spreadsheet', tabs: discovered };
+        }
+      }
+    }
+  } catch (serverErr) {
+    console.warn('Server discovery proxy notice:', serverErr);
+  }
+
+  // Strategy 2: Google Workspace OAuth Token (if available in client)
+  try {
+    const token = localStorage.getItem('jb_google_workspace_token');
+    if (token) {
+      const gRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=properties.title,sheets.properties(sheetId,title,gridProperties.rowCount)`,
+        { headers: { 'Authorization': `Bearer ${token}` } }
+      );
+      if (gRes.ok) {
+        const gData = await gRes.json();
+        if (gData?.properties?.title) sheetTitle = gData.properties.title;
+        (gData?.sheets || []).forEach((s: any, idx: number) => {
+          const gid = String(s?.properties?.sheetId ?? idx);
+          const name = String(s?.properties?.title || `Sheet ${idx + 1}`);
+          const rowCount = s?.properties?.gridProperties?.rowCount;
+          addTab(gid, name, rowCount);
+        });
+        if (discovered.length > 0) {
+          return { sheetId, title: sheetTitle || 'Google Spreadsheet', tabs: discovered };
+        }
+      }
+    }
+  } catch (tokenErr) {
+    console.warn('OAuth discovery notice:', tokenErr);
+  }
+
+  // Strategy 3: Probe Common Tab Names via GViz (Works on all public sheets without CORS issues)
+  const candidateNames = [
+    'Sheet1', 'Sheet2', 'Sheet3', 'Sheet4', 'Sheet5', 'Sheet6', 'Sheet7', 'Sheet8',
+    'الورقة 1', 'الورقة 2', 'الورقة 3', 'الورقة 4', 'الورقة 5', 'الورقة 6',
+    'ورقة 1', 'ورقة 2', 'ورقة 3', 'ورقة1', 'ورقة2', 'ورقة3',
+    'Form Responses 1', 'Form Responses 2', 'Form Responses 3',
+    'ردود النموذج 1', 'ردود النموذج 2', 'استجابات النموذج 1', 'استجابات النموذج 2',
+    'استجابات الفورم', 'الاستجابات', 'الردود', 'استجابات النموذج', 'ردود النموذج',
+    'Data', 'البيانات', 'Cases', 'القضايا', 'Clients', 'العملاء', 'Tasks', 'المهمات',
+    'Summary', 'الملخص', 'Archive', 'الأرشيف', 'Main', 'الرئيسية'
+  ];
+
+  try {
+    const probePromises = candidateNames.map(async (name) => {
+      try {
+        const probeUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(name)}`;
+        const res = await fetch(probeUrl);
+        if (res.ok) {
+          const text = await res.text();
+          if (text.includes('google.visualization.Query.setResponse')) {
+            const match = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);?/);
+            if (match && match[1]) {
+              const parsed = JSON.parse(match[1]);
+              if (parsed.status === 'ok' && parsed.table) {
+                const rowCount = parsed.table.rows?.length || 0;
+                return { name, rowCount };
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+      return null;
+    });
+
+    const probeResults = await Promise.all(probePromises);
+    probeResults.filter(Boolean).forEach((res, idx) => {
+      if (res) {
+        addTab(String(idx), res.name, res.rowCount);
+      }
+    });
+  } catch (probeErr) {
+    console.warn('Probe error:', probeErr);
+  }
+
+  // Strategy 4: Direct Web scraping fallback
   try {
     const urls = [
       `https://docs.google.com/spreadsheets/d/${sheetId}/htmlview`,
@@ -124,31 +258,29 @@ export async function discoverSheetTabs(sheetId: string): Promise<SheetWorksheet
         if (res.ok) {
           const html = await res.text();
           
+          // Sheet Title
+          if (!sheetTitle) {
+            const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+            if (titleMatch && titleMatch[1]) {
+              sheetTitle = titleMatch[1].replace(/ - Google Sheets/i, '').replace(/ - جداول بيانات Google/i, '').trim();
+            }
+          }
+
           // Pattern 1: <li id="sheet-button-([0-9]+)"[^>]*><a[^>]*>([^<]+)</a>
           const btnRegex = /<li\s+id="sheet-button-([0-9]+)"[^>]*>[\s\S]*?<a[^>]*>([^<]+)<\/a>/gi;
           let match: RegExpExecArray | null;
           while ((match = btnRegex.exec(html)) !== null) {
-            const gid = match[1];
-            const name = match[2].trim();
-            if (!visitedGids.has(gid)) {
-              visitedGids.add(gid);
-              discovered.push({ gid, name, isDefault: gid === '0' });
-            }
+            addTab(match[1], match[2].trim());
           }
 
-          // Pattern 2: {"name":"...","id":0} or items: [...]
-          const jsonMatches = html.match(/{"name":"([^"]+)","id":([0-9]+)[^}]*}/g);
+          // Pattern 2: JSON name & id
+          const jsonMatches = html.match(/\{"(?:name|title)":"([^"]+)","(?:id|sheetId)":([0-9]+)[^}]*\}/g);
           if (jsonMatches) {
             jsonMatches.forEach(jm => {
-              const nm = jm.match(/"name":"([^"]+)"/);
-              const idm = jm.match(/"id":([0-9]+)/);
+              const nm = jm.match(/"(?:name|title)":"([^"]+)"/);
+              const idm = jm.match(/"(?:id|sheetId)":([0-9]+)/);
               if (nm && idm) {
-                const name = nm[1];
-                const gid = idm[1];
-                if (!visitedGids.has(gid)) {
-                  visitedGids.add(gid);
-                  discovered.push({ gid, name, isDefault: gid === '0' });
-                }
+                addTab(idm[1], nm[1].trim());
               }
             });
           }
@@ -165,10 +297,14 @@ export async function discoverSheetTabs(sheetId: string): Promise<SheetWorksheet
 
   // Fallback defaults if none discovered
   if (discovered.length === 0) {
-    discovered.push({ gid: '0', name: 'الورقة 1 (الرئيسية)', isDefault: true });
+    addTab('0', 'الورقة 1 (الرئيسية)', 0);
   }
 
-  return discovered;
+  return {
+    sheetId,
+    title: sheetTitle || 'Google Spreadsheet',
+    tabs: discovered
+  };
 }
 
 /**

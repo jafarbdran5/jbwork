@@ -8,6 +8,8 @@ import { DEFAULT_CASE_TYPES, DEFAULT_PLATFORMS } from '../../lib/constants';
 import { logAuditAndEvent } from '../../lib/audit';
 import { saveLocalAttachment, saveLocalCase, getLocalCases } from '../../lib/offlineStore';
 import { detectDuplicateCase, DuplicateMatchResult } from '../../lib/duplicateDetector';
+import { DuplicateAlertModal } from './DuplicateAlertModal';
+import { mergeDataIntoExistingCase } from '../../lib/caseMergeService';
 import { 
   X, 
   Zap, 
@@ -29,6 +31,7 @@ import {
   Globe,
   User,
   Phone,
+  Mail,
   DollarSign,
   Coins,
   Paperclip,
@@ -43,7 +46,8 @@ import {
   ExternalLink,
   CopyCheck,
   CheckCircle2,
-  Eye
+  Eye,
+  GitMerge
 } from 'lucide-react';
 
 interface QuickNewCaseModalProps {
@@ -55,6 +59,7 @@ interface QuickNewCaseModalProps {
     title?: string;
     clientName?: string;
     clientPhone?: string;
+    clientEmail?: string;
     notes?: string;
     links?: string[];
   };
@@ -98,6 +103,7 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
   const [assignedUid, setAssignedUid] = useState<string>(userProfile?.uid || '');
   const [clientName, setClientName] = useState<string>(initialData?.clientName || '');
   const [clientPhone, setClientPhone] = useState<string>(initialData?.clientPhone || '');
+  const [clientEmail, setClientEmail] = useState<string>(initialData?.clientEmail || '');
   const [agreedAmount, setAgreedAmount] = useState<number | string>('');
   const [currency, setCurrency] = useState<'SYP' | 'USD'>('SYP');
   
@@ -123,36 +129,53 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
   
   // Intelligent Duplicate Detection State
   const [duplicateResult, setDuplicateResult] = useState<DuplicateMatchResult | null>(null);
+  const [showDuplicateModal, setShowDuplicateModal] = useState<boolean>(false);
   const [overrideDuplicate, setOverrideDuplicate] = useState<boolean>(false);
 
-  // Real-time Duplicate Check
+  // Real-time Duplicate Check (Phone, Email, Client Name, Identifiers - NOT Case Number)
   useEffect(() => {
     if (!isOpen) {
       setDuplicateResult(null);
+      setShowDuplicateModal(false);
       setOverrideDuplicate(false);
       return;
     }
 
+    // Only run if user has typed something in phone, email, client name, external number, or urls
+    const urlsToCheck = pendingLinks.map(l => l.url.trim()).filter(Boolean);
+    const hasInput = (clientPhone && clientPhone.trim().length >= 5) ||
+      (clientEmail && clientEmail.trim().includes('@')) ||
+      (clientName && clientName.trim().length >= 3) ||
+      (externalNumber && externalNumber.trim().length >= 3) ||
+      urlsToCheck.length > 0;
+
+    if (!hasInput) {
+      setDuplicateResult(null);
+      return;
+    }
+
     const timer = setTimeout(() => {
-      const urlsToCheck = pendingLinks.map(l => l.url.trim()).filter(Boolean);
       const result = detectDuplicateCase({
         externalNumber,
         title,
         clientName,
         clientPhone,
+        clientEmail,
         platform: selectedPlatform,
         caseType: selectedType,
         urls: urlsToCheck
       });
 
-      setDuplicateResult(result.isDuplicate ? result : null);
-      if (!result.isDuplicate) {
+      if (result.isDuplicate) {
+        setDuplicateResult(result);
+      } else {
+        setDuplicateResult(null);
         setOverrideDuplicate(false);
       }
     }, 250);
 
     return () => clearTimeout(timer);
-  }, [isOpen, externalNumber, title, clientName, clientPhone, selectedPlatform, selectedType, pendingLinks]);
+  }, [isOpen, externalNumber, title, clientName, clientPhone, clientEmail, selectedPlatform, selectedType, pendingLinks]);
 
   useEffect(() => {
     if (initialType) {
@@ -162,6 +185,7 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
       if (initialData.title) setTitle(initialData.title);
       if (initialData.clientName) setClientName(initialData.clientName);
       if (initialData.clientPhone) setClientPhone(initialData.clientPhone);
+      if (initialData.clientEmail) setClientEmail(initialData.clientEmail);
       if (initialData.notes) {
         setDynamicValues(prev => ({ ...prev, notes: initialData.notes, description: initialData.notes }));
       }
@@ -287,6 +311,13 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
 
     setLoading(true);
     try {
+      // Check if duplicate detected and not overridden
+      if (duplicateResult && duplicateResult.isDuplicate && !overrideDuplicate) {
+        setShowDuplicateModal(true);
+        setLoading(false);
+        return;
+      }
+
       // 1. Generate atomic sequential case number: JB-YYYY-000001
       const caseNumber = await generateNextCaseNumber();
 
@@ -317,6 +348,8 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
         client: clientName.trim() ? {
           name: clientName.trim(),
           phone: clientPhone.trim() || '',
+          email: clientEmail.trim() || '',
+          whatsapp: clientPhone.trim() || ''
         } : null,
         typeSpecificData: {
           platform: selectedPlatform,
@@ -600,7 +633,7 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
               </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {/* Client Name */}
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1 flex items-center gap-1.5">
@@ -632,6 +665,24 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
                 />
               </div>
 
+              {/* Client Email */}
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1 flex items-center gap-1.5">
+                  <Mail className="w-3 h-3 text-blue-400" />
+                  <span>البريد الإلكتروني للعميل</span>
+                </label>
+                <input
+                  type="email"
+                  value={clientEmail}
+                  onChange={(e) => setClientEmail(e.target.value)}
+                  placeholder="client@example.com"
+                  className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 font-mono transition-colors"
+                  dir="ltr"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
               {/* Case Cost (Agreed Amount) */}
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1 flex items-center gap-1.5">
@@ -935,7 +986,7 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
                 : 'bg-amber-950/40 border-amber-500/60 text-amber-200'
             }`}>
               <div className="flex items-start justify-between gap-3">
-                <div className="flex items-start gap-3">
+                <div className="flex items-start gap-3 w-full">
                   <div className={`p-2 rounded-xl shrink-0 ${
                     duplicateResult.level === 'EXACT' || duplicateResult.score >= 90
                       ? 'bg-rose-900/60 text-rose-300'
@@ -943,73 +994,84 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
                   }`}>
                     <AlertTriangle className="w-5 h-5" />
                   </div>
-                  <div className="space-y-1.5">
-                    <div className="flex items-center gap-2 flex-wrap">
+                  <div className="space-y-2 flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
                       <span className="font-bold text-xs">
-                        {isRTL ? 'تنبيه: تم اكتشاف تشابه أو تكرار محتمل مع قضية مسجلة مسبقاً!' : 'Duplicate Case Detected!'}
+                        ⚠️ تم العثور على قضية سابقة مرتبطة بهذه المعلومات!
                       </span>
-                      <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full ${
-                        duplicateResult.score >= 90
-                          ? 'bg-rose-500 text-white'
-                          : 'bg-amber-500 text-slate-950'
-                      }`}>
-                        {duplicateResult.score}% {isRTL ? 'نسبة تطابق' : 'Match Score'}
-                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setShowDuplicateModal(true)}
+                        className="text-[11px] font-bold px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg transition-colors cursor-pointer"
+                      >
+                        عرض خيارات المعالجة (فتح / دمج / إنشاء)
+                      </button>
                     </div>
 
                     <p className="text-[11px] opacity-90 leading-relaxed">
                       {isRTL ? duplicateResult.matchReasonAr : duplicateResult.matchReasonEn}
                     </p>
 
-                    <div className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 flex items-center justify-between gap-3 mt-2">
-                      <div className="overflow-hidden">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-mono font-bold text-xs text-cyan-400">
-                            {duplicateResult.matchedCase.caseNumber}
-                          </span>
-                          {duplicateResult.matchedCase.externalNumber && (
-                            <span className="text-[10px] text-slate-400 font-mono">
-                              ({duplicateResult.matchedCase.externalNumber})
+                    <div className="p-3 rounded-xl bg-slate-950/90 border border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-bold text-xs text-cyan-400">
+                              {duplicateResult.matchedCase.caseNumber}
                             </span>
+                            <span className="text-xs text-white font-medium">
+                              {duplicateResult.matchedCase.title}
+                            </span>
+                          </div>
+                          {duplicateResult.matchedCase.client?.name && (
+                            <p className="text-[11px] text-slate-400 mt-0.5">
+                              العميل: {duplicateResult.matchedCase.client.name} {duplicateResult.matchedCase.client.phone ? `(${duplicateResult.matchedCase.client.phone})` : ''}
+                            </p>
                           )}
                         </div>
-                        <p className="text-xs text-white truncate font-medium">
-                          {duplicateResult.matchedCase.title}
-                        </p>
-                        {duplicateResult.matchedCase.client?.name && (
-                          <p className="text-[10px] text-slate-400">
-                            {isRTL ? 'الموكل:' : 'Client:'} {duplicateResult.matchedCase.client.name} {duplicateResult.matchedCase.client.phone ? `(${duplicateResult.matchedCase.client.phone})` : ''}
-                          </p>
-                        )}
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (duplicateResult.matchedCase) {
-                            onCaseCreated(duplicateResult.matchedCase.id);
-                            onClose();
-                          }
-                        }}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold shrink-0 transition-colors cursor-pointer"
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                        <span>{isRTL ? 'فتح القضية السابقة' : 'Open Existing'}</span>
-                      </button>
-                    </div>
+                      {/* 3 Action Buttons on the card */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 border-t border-slate-800">
+                        {/* 1. Open Existing */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (duplicateResult.matchedCase) {
+                              onCaseCreated(duplicateResult.matchedCase.id);
+                              onClose();
+                            }
+                          }}
+                          className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-800 text-cyan-300 text-xs font-bold transition-all cursor-pointer"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>1. فتح القضية الحالية</span>
+                        </button>
 
-                    {/* Confirmation Checkbox to override */}
-                    <label className="flex items-center gap-2 pt-2 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={overrideDuplicate}
-                        onChange={(e) => setOverrideDuplicate(e.target.checked)}
-                        className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-amber-500 focus:ring-amber-500"
-                      />
-                      <span className="text-[11px] font-semibold text-slate-200">
-                        {isRTL ? 'أؤكد رغبتي بإنشاء قضية جديدة منفصلة رغم هذا التشابه' : 'I confirm creating a separate case despite the match'}
-                      </span>
-                    </label>
+                        {/* 2. Merge */}
+                        <button
+                          type="button"
+                          onClick={() => setShowDuplicateModal(true)}
+                          className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-xs font-bold transition-all cursor-pointer"
+                        >
+                          <GitMerge className="w-3.5 h-3.5" />
+                          <span>2. دمج المعلومات</span>
+                        </button>
+
+                        {/* 3. Create Separate */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOverrideDuplicate(true);
+                            setDuplicateResult(null);
+                          }}
+                          className="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 text-xs font-bold transition-all cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>3. إنشاء قضية جديدة</span>
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1031,9 +1093,8 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
               </button>
               <button
                 type="submit"
-                disabled={loading || (duplicateResult !== null && duplicateResult.score >= 80 && !overrideDuplicate)}
+                disabled={loading}
                 className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white text-xs font-bold shadow-lg shadow-cyan-600/30 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                title={duplicateResult && duplicateResult.score >= 80 && !overrideDuplicate ? (isRTL ? 'يرجى تأكيد الرغبة بالمتابعة لتخطي التكرار' : 'Please check confirm override') : ''}
               >
                 <Zap className="w-4 h-4" />
                 <span>{loading ? t('saving') : isRTL ? 'إنشاء وفتح مساحة القضية' : 'Create & Open Workspace'}</span>
@@ -1041,6 +1102,45 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
             </div>
           </div>
         </form>
+
+        {/* Dedicated Duplicate Action Modal */}
+        {duplicateResult && duplicateResult.matchedCase && (
+          <DuplicateAlertModal
+            isOpen={showDuplicateModal}
+            onClose={() => setShowDuplicateModal(false)}
+            duplicateResult={duplicateResult}
+            currentInputData={{
+              clientName,
+              clientPhone,
+              clientEmail,
+              notes: dynamicValues.notes || dynamicValues.description || title,
+              links: pendingLinks.map(l => l.url.trim()).filter(Boolean),
+              typeSpecificData: {
+                platform: selectedPlatform,
+                ...dynamicValues
+              }
+            }}
+            userProfile={userProfile}
+            onOpenExistingCase={(caseId) => {
+              setShowDuplicateModal(false);
+              onCaseCreated(caseId);
+              onClose();
+            }}
+            onMergeSuccess={(mergedCaseId) => {
+              setShowDuplicateModal(false);
+              onCaseCreated(mergedCaseId);
+              onClose();
+            }}
+            onProceedAnyway={() => {
+              setShowDuplicateModal(false);
+              setOverrideDuplicate(true);
+              // continue with submission
+              setTimeout(() => {
+                handleCreateCase();
+              }, 100);
+            }}
+          />
+        )}
       </div>
     </div>
   );

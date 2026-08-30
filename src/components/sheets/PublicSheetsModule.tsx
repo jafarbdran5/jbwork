@@ -25,6 +25,7 @@ import {
   deletePublicSheet, 
   fetchPublicGoogleSheet, 
   discoverSheetTabs,
+  discoverSpreadsheetMetadata,
   extractSheetInfo, 
   extractFilesAndLinksFromRow,
   getGoogleDrivePreviewUrl,
@@ -80,8 +81,10 @@ import {
   Send,
   Compass,
   FileSearch,
-  FolderOpen
+  FolderOpen,
+  Edit3
 } from 'lucide-react';
+import { QuickRenameModal } from '../common/QuickRenameModal';
 
 interface PublicSheetsModuleProps {
   onSelectCase?: (caseId: string) => void;
@@ -117,6 +120,7 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
   const [isAddTabModalOpen, setIsAddTabModalOpen] = useState(false);
   const [isLinkToCaseModalOpen, setIsLinkToCaseModalOpen] = useState(false);
   const [isGuideModalOpen, setIsGuideModalOpen] = useState(false);
+  const [renameModalInfo, setRenameModalInfo] = useState<{ isOpen: boolean; labelId: string; defaultFallback: string } | null>(null);
   const [inspectingRow, setInspectingRow] = useState<SheetRowItem | null>(null);
   const [linkingRow, setLinkingRow] = useState<SheetRowItem | null>(null);
   const [previewingFile, setPreviewingFile] = useState<{ url: string; title: string } | null>(null);
@@ -138,6 +142,11 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
   const [isTestingUrl, setIsTestingUrl] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string; rowCount?: number; columns?: SheetColumn[]; discoveredTabs?: SheetWorksheetTab[] } | null>(null);
 
+  // 🌟 Automatic Multi-Tab Discovery & Selection State for Add Modal 🌟
+  const [discoveredModalTabs, setDiscoveredModalTabs] = useState<SheetWorksheetTab[]>([]);
+  const [isAutoDiscoveringModal, setIsAutoDiscoveringModal] = useState(false);
+  const [newManualTabNameInModal, setNewManualTabNameInModal] = useState('');
+
   // Pagination & Sorting for Table
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(25);
@@ -152,6 +161,35 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
       setSelectedSheetId(loaded[0].id);
     }
   }, []);
+
+  // 🌟 Auto-discover all worksheet tabs immediately when user enters / pastes a Google Sheet URL 🌟
+  useEffect(() => {
+    if (!formUrl || importMode !== 'url') return;
+    const { sheetId, gid } = extractSheetInfo(formUrl);
+    if (!sheetId || sheetId.length < 15) return;
+
+    const timer = setTimeout(async () => {
+      setIsAutoDiscoveringModal(true);
+      try {
+        const meta = await discoverSpreadsheetMetadata(formUrl);
+        if (meta.tabs && meta.tabs.length > 0) {
+          setDiscoveredModalTabs(meta.tabs);
+          if (!formTitle && meta.title && meta.title !== 'Google Spreadsheet') {
+            setFormTitle(meta.title);
+          }
+          if (gid) {
+            setFormGid(gid);
+          }
+        }
+      } catch (e) {
+        console.warn('Auto tab discovery notice:', e);
+      } finally {
+        setIsAutoDiscoveringModal(false);
+      }
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [formUrl, importMode]);
 
   // Load live system cases for linking
   useEffect(() => {
@@ -288,28 +326,30 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
     if (!activeSheet) return;
     setIsDiscoveringTabs(true);
     try {
-      const discovered = await discoverSheetTabs(activeSheet.sheetId);
-      if (discovered.length > 0) {
+      const meta = await discoverSpreadsheetMetadata(activeSheet.sheetId || activeSheet.url);
+      if (meta.tabs && meta.tabs.length > 0) {
         // Merge with existing tabs
         const currentTabs = activeSheet.tabs || [];
         const mergedMap = new Map<string, SheetWorksheetTab>();
-        currentTabs.forEach(t => mergedMap.set(t.gid, t));
-        discovered.forEach(d => {
-          if (!mergedMap.has(d.gid)) {
-            mergedMap.set(d.gid, d);
+        currentTabs.forEach(t => mergedMap.set(`${t.gid}_${t.name}`, t));
+        meta.tabs.forEach(d => {
+          const key = `${d.gid}_${d.name}`;
+          if (!mergedMap.has(key)) {
+            mergedMap.set(key, d);
           }
         });
 
         const mergedList = Array.from(mergedMap.values());
         const updatedSheet: SavedPublicSheet = {
           ...activeSheet,
+          title: (!activeSheet.title || activeSheet.title === 'شيت مستورد') && meta.title ? meta.title : activeSheet.title,
           tabs: mergedList
         };
         const updated = savePublicSheet(updatedSheet);
         setSheets(updated);
         showToast(isRTL ? `تم اكتشاف وتحديث ${mergedList.length} ورقة عمل للشيت!` : `Discovered ${mergedList.length} worksheet tabs!`);
       } else {
-        showToast(isRTL ? 'لم يتم العثور على أوراق إضافية عامة، يمكنك إضافة ورقة بالاسم يدوياً.' : 'No additional public tabs found.');
+        showToast(isRTL ? 'لم يتم العثور على أوراق إضافية، يمكنك إضافة ورقة بالاسم يدوياً.' : 'No additional public tabs found.');
       }
     } catch (e) {
       showToast(isRTL ? 'تعذر جلب الأوراق تلقائياً، يمكنك كتابة اسم الورقة يدوياً.' : 'Tab discovery error');
@@ -318,7 +358,31 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
     }
   };
 
-  // Add Custom Worksheet Tab Manually
+  // 🗑️ Exclude/Delete a discovered tab inside the Add Modal before saving
+  const handleDeleteDiscoveredModalTab = (gid: string, name: string) => {
+    setDiscoveredModalTabs(prev => {
+      const filtered = prev.filter(t => !(t.gid === gid && t.name === name));
+      return filtered;
+    });
+    showToast(isRTL ? `تم استبعاد ورقة العمل "${name}"` : `Excluded worksheet "${name}"`);
+  };
+
+  // ➕ Manually add a worksheet tab inside the Add Modal
+  const handleAddManualTabInModal = () => {
+    if (!newManualTabNameInModal.trim()) return;
+    const name = newManualTabNameInModal.trim();
+    const gid = `custom_${Date.now()}`;
+    const newTab: SheetWorksheetTab = {
+      gid,
+      name,
+      rowCount: 0
+    };
+    setDiscoveredModalTabs(prev => [...prev, newTab]);
+    setNewManualTabNameInModal('');
+    showToast(isRTL ? `تمت إضافة الورقة "${name}"` : `Added tab "${name}"`);
+  };
+
+  // Add Custom Worksheet Tab Manually in Main Sheet View
   const handleAddCustomTab = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeSheet || !newTabName.trim()) return;
@@ -433,10 +497,15 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
         throw new Error('الرابط لا يبدو كرابط Google Sheet صالح');
       }
 
-      const [res, discoveredTabs] = await Promise.all([
+      const [res, meta] = await Promise.all([
         fetchPublicGoogleSheet(formUrl, gid || '0'),
-        discoverSheetTabs(sheetId).catch(() => [])
+        discoverSpreadsheetMetadata(formUrl).catch(() => ({ sheetId, title: '', tabs: [] }))
       ]);
+
+      const foundTabs = (meta.tabs && meta.tabs.length > 0) ? meta.tabs : [];
+      if (foundTabs.length > 0) {
+        setDiscoveredModalTabs(foundTabs);
+      }
 
       setTestResult({
         success: true,
@@ -445,11 +514,11 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
           : `Connected! Found ${res.totalRows} rows and ${res.columns.length} columns.`,
         rowCount: res.totalRows,
         columns: res.columns,
-        discoveredTabs
+        discoveredTabs: foundTabs
       });
 
       if (!formTitle) {
-        setFormTitle(res.sheetTitle || (isRTL ? 'شيت جديد مستورد' : 'Imported Sheet'));
+        setFormTitle(meta.title || res.sheetTitle || (isRTL ? 'شيت جديد مستورد' : 'Imported Sheet'));
       }
     } catch (err: any) {
       setTestResult({
@@ -512,6 +581,7 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
       setPastedData('');
       setFormTitle('');
       setFormDescription('');
+      setDiscoveredModalTabs([]);
       setTestResult(null);
 
       showToast(isRTL ? `تم استيراد ${parsed.totalRows} صف بنجاح!` : `Imported ${parsed.totalRows} rows successfully!`);
@@ -533,14 +603,26 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
     setIsTestingUrl(true);
 
     try {
-      const [result, discoveredTabs] = await Promise.all([
-        fetchPublicGoogleSheet(formUrl, gid || formGid || '0'),
-        discoverSheetTabs(sheetId).catch(() => [])
-      ]);
+      // Determine final tabs: prioritize user-curated discoveredModalTabs if any remain
+      let finalTabsToSave: SheetWorksheetTab[] = discoveredModalTabs.length > 0
+        ? [...discoveredModalTabs]
+        : [];
 
-      const initialTabs: SheetWorksheetTab[] = (discoveredTabs && discoveredTabs.length > 0)
-        ? discoveredTabs
-        : [{ gid: gid || formGid || '0', name: 'الورقة 1', isDefault: true, rowCount: result.totalRows }];
+      if (finalTabsToSave.length === 0) {
+        const meta = await discoverSpreadsheetMetadata(formUrl).catch(() => ({ sheetId, title: '', tabs: [] }));
+        if (meta.tabs && meta.tabs.length > 0) {
+          finalTabsToSave = meta.tabs;
+        }
+      }
+
+      const activeGid = gid || formGid || (finalTabsToSave[0]?.gid) || '0';
+      const activeName = (finalTabsToSave.find(t => t.gid === activeGid)?.name) || finalTabsToSave[0]?.name || 'الورقة 1';
+
+      const result = await fetchPublicGoogleSheet(formUrl, activeGid, activeName);
+
+      if (finalTabsToSave.length === 0) {
+        finalTabsToSave = [{ gid: activeGid, name: activeName, isDefault: true, rowCount: result.totalRows }];
+      }
 
       const newSheet: SavedPublicSheet = {
         id: `sheet_${Date.now()}`,
@@ -548,11 +630,11 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
         description: formDescription.trim(),
         url: formUrl.trim(),
         sheetId,
-        gid: gid || formGid || '0',
-        activeTabName: initialTabs[0]?.name || 'الورقة 1',
-        tabs: initialTabs,
+        gid: activeGid,
+        activeTabName: activeName,
+        tabs: finalTabsToSave,
         category: formCategory.trim() || 'عام',
-        tags: ['Google Forms', formCategory],
+        tags: ['Google Sheets', formCategory],
         color: '#4F46E5',
         createdAt: new Date().toISOString(),
         lastSyncedAt: new Date().toISOString(),
@@ -573,11 +655,16 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
       setPastedData('');
       setFormTitle('');
       setFormDescription('');
+      setDiscoveredModalTabs([]);
       setTestResult(null);
 
-      showToast(isRTL ? 'تم حفظ الشيت وجلب البيانات بنجاح!' : 'Sheet saved & loaded successfully!');
+      showToast(isRTL ? `تم حفظ الشيت وتحميل ${finalTabsToSave.length} أوراق عمل بنجاح!` : `Sheet saved with ${finalTabsToSave.length} tabs!`);
     } catch (err: any) {
       // Save with error state so user can retry or adjust
+      const fallbackTabs = discoveredModalTabs.length > 0 
+        ? discoveredModalTabs 
+        : [{ gid: gid || formGid || '0', name: 'الورقة 1', isDefault: true }];
+
       const newSheet: SavedPublicSheet = {
         id: `sheet_${Date.now()}`,
         title: formTitle.trim(),
@@ -585,7 +672,7 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
         url: formUrl.trim(),
         sheetId,
         gid: gid || formGid || '0',
-        tabs: [{ gid: gid || formGid || '0', name: 'الورقة 1', isDefault: true }],
+        tabs: fallbackTabs,
         category: formCategory.trim() || 'عام',
         tags: [formCategory],
         color: '#4F46E5',
@@ -601,7 +688,8 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
       setSheets(updated);
       setSelectedSheetId(newSheet.id);
       setIsAddModalOpen(false);
-      showToast(isRTL ? 'تم حفظ الشيت ولكن فشلت المزامنة. يمكنك استخدام اللصق اليدوي.' : 'Saved with sync error');
+      setDiscoveredModalTabs([]);
+      showToast(isRTL ? `تم حفظ الشيت ولكن واجه مشكلة أثناء المزامنة: ${err.message}` : `Saved with sync notice: ${err.message}`);
     } finally {
       setIsTestingUrl(false);
     }
@@ -1155,6 +1243,20 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                     <h2 className="text-base font-bold text-white truncate">
                       {activeSheet.title}
                     </h2>
+                    {canEdit && (
+                      <button
+                        type="button"
+                        onClick={() => setRenameModalInfo({
+                          isOpen: true,
+                          labelId: `sheet_${activeSheet.id}`,
+                          defaultFallback: activeSheet.title
+                        })}
+                        title="إعادة تسمية هذا الجدول"
+                        className="p-1 text-slate-400 hover:text-amber-400 hover:bg-slate-800 rounded transition"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
                       {activeSheet.category}
                     </span>
@@ -1238,6 +1340,27 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                             </span>
                           )}
                         </button>
+
+                        {/* Quick Rename Worksheet Tab */}
+                        {canEdit && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setRenameModalInfo({
+                                isOpen: true,
+                                labelId: `sheet_${activeSheet.id}_tab_${tab.gid || tab.name}`,
+                                defaultFallback: tab.name
+                              });
+                            }}
+                            title={`إعادة تسمية ورقة العمل "${tab.name}"`}
+                            className={`p-1 rounded-md transition-colors ${
+                              isActive ? 'text-indigo-200 hover:text-white hover:bg-indigo-700' : 'text-slate-500 hover:text-amber-400 hover:bg-slate-800'
+                            }`}
+                          >
+                            <Edit3 className="w-3 h-3" />
+                          </button>
+                        )}
 
                         {/* Delete Tab Button */}
                         <button
@@ -1730,9 +1853,89 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                       disabled={isTestingUrl || !formUrl}
                       className="px-4 py-2.5 bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 rounded-xl text-xs font-bold transition-colors cursor-pointer disabled:opacity-40"
                     >
-                      {isTestingUrl ? (isRTL ? 'جاري الفحص...' : 'Testing...') : (isRTL ? 'فحص الرابط' : 'Test')}
+                      {isTestingUrl ? (isRTL ? 'جاري الفحص...' : 'Testing...') : (isRTL ? 'فحص واكتشاف' : 'Test & Discover')}
                     </button>
                   </div>
+
+                  {/* Automatic Loading Indicator */}
+                  {isAutoDiscoveringModal && (
+                    <div className="flex items-center gap-2 p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 text-xs animate-pulse">
+                      <Compass className="w-4 h-4 animate-spin text-indigo-400" />
+                      <span>{isRTL ? 'جاري اكتشاف وتحميل أوراق العمل من الشيت تلقائياً...' : 'Auto-discovering worksheet tabs from spreadsheet...'}</span>
+                    </div>
+                  )}
+
+                  {/* 📑 Discovered Tabs List with Deletion & Exclusion 📑 */}
+                  {discoveredModalTabs.length > 0 && (
+                    <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Compass className="w-4 h-4 text-emerald-400" />
+                          <span className="text-xs font-bold text-white">
+                            {isRTL ? `أوراق العمل المكتشفة (${discoveredModalTabs.length})` : `Discovered Tabs (${discoveredModalTabs.length})`}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-slate-400">
+                          {isRTL ? 'اضغط 🗑️ لحذف أي ورقة لا تريدها' : 'Click 🗑️ to exclude any tab'}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
+                        {discoveredModalTabs.map((tab, idx) => (
+                          <div
+                            key={`${tab.gid}_${tab.name}_${idx}`}
+                            className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 text-xs"
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <FileText className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                              <span className="font-semibold text-slate-200 truncate" title={tab.name}>
+                                {tab.name}
+                              </span>
+                              {tab.rowCount !== undefined && tab.rowCount > 0 && (
+                                <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-mono shrink-0">
+                                  {tab.rowCount} {isRTL ? 'صف' : 'rows'}
+                                </span>
+                              )}
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteDiscoveredModalTab(tab.gid, tab.name)}
+                              title={isRTL ? `حذف واستبعاد ورقة "${tab.name}"` : `Exclude tab "${tab.name}"`}
+                              className="p-1 rounded-md text-slate-500 hover:text-red-400 hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Add another tab manually */}
+                      <div className="flex items-center gap-2 pt-2 border-t border-slate-800/80">
+                        <input
+                          type="text"
+                          placeholder={isRTL ? 'اسم ورقة أخرى ترغب بإضافتها...' : 'Add another tab name...'}
+                          value={newManualTabNameInModal}
+                          onChange={(e) => setNewManualTabNameInModal(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddManualTabInModal();
+                            }
+                          }}
+                          className="flex-1 px-3 py-1.5 rounded-lg text-xs bg-slate-900 border border-slate-800 text-white placeholder-slate-500 outline-none focus:border-indigo-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleAddManualTabInModal}
+                          disabled={!newManualTabNameInModal.trim()}
+                          className="px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-indigo-400 border border-slate-700 disabled:opacity-40 cursor-pointer"
+                        >
+                          {isRTL ? '+ إضافة' : '+ Add'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-1.5">
@@ -2259,6 +2462,20 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Quick Rename Modal for Sheets and Tabs */}
+      {renameModalInfo && (
+        <QuickRenameModal
+          isOpen={renameModalInfo.isOpen}
+          onClose={() => setRenameModalInfo(null)}
+          labelId={renameModalInfo.labelId}
+          defaultFallback={renameModalInfo.defaultFallback}
+          onSuccess={(newName) => {
+            setSheets(getSavedPublicSheets());
+            showToast(isRTL ? `تم تحديث الاسم إلى: "${newName}"` : `Updated title to: "${newName}"`);
+          }}
+        />
       )}
 
     </div>

@@ -93,23 +93,40 @@ export const PaymentsModule: React.FC<PaymentsModuleProps> = ({ onSelectCase }) 
     }
   };
 
+  const handleDeletePayment = async (e: React.MouseEvent, pay: PaymentRecord) => {
+    e.stopPropagation();
+    if (!window.confirm(isRTL ? `هل أنت متأكد من حذف سجل الدفعة: ${pay.amount} ${pay.currency}؟` : `Delete payment record: ${pay.amount} ${pay.currency}?`)) return;
+
+    setPayments(prev => prev.filter(p => p.id !== pay.id));
+    await deleteEntity('payment', pay.id, userProfile, {
+      customTitle: `${pay.amount} ${pay.currency} - ${pay.clientName || pay.caseNumber || ''}`,
+      reason: `حذف دفعة مالية من قسم المدفوعات`
+    });
+  };
+
   const totalCollectedSYP = payments
+    .filter(p => !p.isDeleted && !(p as any)._deleted)
     .filter(p => (p.currency === 'SYP' || !p.currency) && p.status === 'paid')
     .reduce((acc, p) => acc + (p.amount || (p as any).paymentAmount || 0), 0);
 
   const totalCollectedUSD = payments
+    .filter(p => !p.isDeleted && !(p as any)._deleted)
     .filter(p => p.currency === 'USD' && p.status === 'paid')
     .reduce((acc, p) => acc + (p.amount || (p as any).paymentAmount || 0), 0);
 
   const pendingAmount = payments
+    .filter(p => !p.isDeleted && !(p as any)._deleted)
     .filter(p => p.status === 'pending')
     .reduce((acc, p) => acc + (p.amount || (p as any).paymentAmount || 0), 0);
 
-  const filtered = payments.filter(p => 
-    p.caseNumber?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    p.clientName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    p.paymentMethod?.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filtered = payments.filter(p => {
+    if (p.isDeleted || (p as any)._deleted) return false;
+    return (
+      p.caseNumber?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      p.clientName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      p.paymentMethod?.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  });
 
   return (
     <div className="space-y-5 animate-in fade-in duration-200">

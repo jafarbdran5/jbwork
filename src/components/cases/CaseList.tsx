@@ -5,7 +5,8 @@ import { db } from '../../lib/firebase';
 import { collection, query, where, orderBy, onSnapshot } from 'firebase/firestore';
 import { CaseItem, CaseTypeConfig, PlatformConfig, UserProfile, CaseStatus, CasePriority } from '../../types';
 import { DEFAULT_CASE_TYPES, DEFAULT_PLATFORMS } from '../../lib/constants';
-import { getLocalCases, saveLocalCase } from '../../lib/offlineStore';
+import { deleteDoc, doc, getDocs } from 'firebase/firestore';
+import { getLocalCases, saveLocalCase, removeLocalCase } from '../../lib/offlineStore';
 import { deleteEntity } from '../../services/database/deleteService';
 import { 
   Search, 
@@ -24,13 +25,51 @@ import {
   ExternalLink,
   Phone,
   Coins,
-  Trash2
+  Trash2,
+  Sparkles
 } from 'lucide-react';
 
 interface CaseListProps {
   onSelectCase: (caseId: string) => void;
   onOpenQuickCase: (type?: string) => void;
   myCasesOnly?: boolean;
+}
+
+// 🌟 Pure Deduplication Helper for Cases 🌟
+function deduplicateCases(rawList: CaseItem[]): CaseItem[] {
+  const seenIds = new Set<string>();
+  const seenNumbers = new Set<string>();
+  const seenSignatures = new Set<string>();
+  const result: CaseItem[] = [];
+
+  for (const item of rawList) {
+    if (!item) continue;
+    if (item.isDeleted || (item as any)._deleted) continue;
+
+    // Unique ID check
+    if (item.id && seenIds.has(item.id)) continue;
+
+    // Unique Case Number check
+    if (item.caseNumber && item.caseNumber.trim()) {
+      const cleanNum = item.caseNumber.trim().toUpperCase();
+      if (seenNumbers.has(cleanNum)) continue;
+      seenNumbers.add(cleanNum);
+    }
+
+    // Secondary duplicate signature (Title + Client Name)
+    const titleClean = (item.title || '').trim().toLowerCase();
+    const clientClean = (item.client?.name || '').trim().toLowerCase();
+    if (titleClean.length > 3) {
+      const signature = `${titleClean}__${clientClean}`;
+      if (seenSignatures.has(signature)) continue;
+      seenSignatures.add(signature);
+    }
+
+    if (item.id) seenIds.add(item.id);
+    result.push(item);
+  }
+
+  return result;
 }
 
 export const CaseList: React.FC<CaseListProps> = ({
@@ -41,8 +80,14 @@ export const CaseList: React.FC<CaseListProps> = ({
   const { t, isRTL } = useI18n();
   const { userProfile, canEdit } = useAuth();
 
-  const [cases, setCases] = useState<CaseItem[]>(() => getLocalCases().filter(c => !c.isDeleted && !(c as any)._deleted));
-  const [loading, setLoading] = useState<boolean>(() => getLocalCases().filter(c => !c.isDeleted && !(c as any)._deleted).length === 0);
+  const [cases, setCases] = useState<CaseItem[]>(() => {
+    const raw = getLocalCases().filter(c => !c.isDeleted && !(c as any)._deleted);
+    return deduplicateCases(raw);
+  });
+  const [loading, setLoading] = useState<boolean>(() => {
+    const raw = getLocalCases().filter(c => !c.isDeleted && !(c as any)._deleted);
+    return raw.length === 0;
+  });
   const [searchQuery, setSearchQuery] = useState<string>('');
   
   // Quick Filter
@@ -62,8 +107,12 @@ export const CaseList: React.FC<CaseListProps> = ({
   // Subscribe to Cases & Live Deletion Events
   useEffect(() => {
     const syncLocal = () => {
-      const local = getLocalCases().filter(c => !c.isDeleted && !(c as any)._deleted);
-      setCases(local);
+      const raw = getLocalCases().filter(c => !c.isDeleted && !(c as any)._deleted);
+      const clean = deduplicateCases(raw);
+      setCases(clean);
+      try {
+        localStorage.setItem('jb_cached_cases', JSON.stringify(clean));
+      } catch (_) {}
     };
 
     const handleDataChanged = (e: any) => {
@@ -89,8 +138,11 @@ export const CaseList: React.FC<CaseListProps> = ({
         });
 
       if (list.length > 0) {
-        setCases(list);
-        list.forEach(c => saveLocalCase(c));
+        const cleanList = deduplicateCases(list);
+        setCases(cleanList);
+        try {
+          localStorage.setItem('jb_cached_cases', JSON.stringify(cleanList));
+        } catch (_) {}
       } else {
         syncLocal();
       }
@@ -114,19 +166,61 @@ export const CaseList: React.FC<CaseListProps> = ({
     e.stopPropagation();
 
     const confirmMsg = isRTL 
-      ? `هل أنت متأكد من نقل القضية (${caseItem.caseNumber || ''} - ${caseItem.title || ''}) إلى سلة المهملات؟`
+      ? `هل أنت متأكد من حذف/نقل القضية (${caseItem.caseNumber || ''} - ${caseItem.title || ''}) إلى سلة المهملات؟`
       : `Move case (${caseItem.caseNumber || ''} - ${caseItem.title || ''}) to Recycle Bin?`;
     
     if (!window.confirm(confirmMsg)) return;
 
     // 1. Immediately remove from React state for zero-latency UI
-    setCases(prev => prev.filter(c => c.id !== caseItem.id && c.caseNumber !== caseItem.caseNumber));
+    setCases(prev => prev.filter(c => 
+      c.id !== caseItem.id && 
+      (!caseItem.caseNumber || c.caseNumber !== caseItem.caseNumber)
+    ));
 
-    // 2. Call unified deletion service
+    // 2. Remove directly from localStorage caches
+    removeLocalCase(caseItem.id);
+    if (caseItem.caseNumber) {
+      removeLocalCase(caseItem.caseNumber);
+    }
+    try {
+      const all = getLocalCases().filter(c => 
+        c.id !== caseItem.id && 
+        (!caseItem.caseNumber || c.caseNumber !== caseItem.caseNumber)
+      );
+      localStorage.setItem('jb_cached_cases', JSON.stringify(all));
+    } catch (_) {}
+
+    // 3. Call unified deletion service
     await deleteEntity('case', caseItem.id, userProfile, {
       customTitle: `${caseItem.caseNumber || ''} - ${caseItem.title || ''}`,
       reason: 'حذف مباشر من قائمة القضايا'
     });
+
+    // 4. Force direct Firestore deletion to ensure it never resurfaces
+    try {
+      await deleteDoc(doc(db, 'cases', caseItem.id));
+      if (caseItem.caseNumber) {
+        const qDup = query(collection(db, 'cases'), where('caseNumber', '==', caseItem.caseNumber));
+        const dupSnap = await getDocs(qDup);
+        dupSnap.forEach(async (d) => {
+          try {
+            await deleteDoc(doc(db, 'cases', d.id));
+          } catch (_) {}
+        });
+      }
+    } catch (_) {}
+
+    // 5. Dispatch global UI update
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'cases', entityType: 'case' } }));
+  };
+
+  // Clean all duplicate cases manually
+  const handleCleanDuplicates = () => {
+    const raw = getLocalCases().filter(c => !c.isDeleted && !(c as any)._deleted);
+    const clean = deduplicateCases(raw);
+    setCases(clean);
+    localStorage.setItem('jb_cached_cases', JSON.stringify(clean));
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'cases' } }));
   };
 
   // Filter cases

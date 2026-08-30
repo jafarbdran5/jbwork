@@ -1,18 +1,29 @@
 import { CaseItem } from '../types';
 import { getLocalCases } from './offlineStore';
 
+export type DuplicateMatchType = 
+  | 'EXACT_PHONE' 
+  | 'EXACT_EMAIL' 
+  | 'EXACT_IDENTIFIER' 
+  | 'NAME_SIMILARITY' 
+  | 'MULTIPLE' 
+  | 'NONE';
+
 export interface DuplicateMatchResult {
   isDuplicate: boolean;
   score: number; // 0 to 100
   level: 'EXACT' | 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE';
+  matchType: DuplicateMatchType;
   matchReasonAr: string;
   matchReasonEn: string;
   matchedCase: CaseItem | null;
   matchingFields: string[];
+  isDefiniteMatch: boolean; // True if Phone or Email or Official Identifier matches
+  isNameWarningOnly: boolean; // True if only client name matches/similar
 }
 
 /**
- * Normalize Arabic text for fuzzy matching:
+ * Normalize Arabic text for smart matching:
  * - Unifies alefs (أ, إ, آ -> ا)
  * - Unifies taa marbuta & haa (ة -> ه)
  * - Unifies yaa & alif maksura (ى -> ي)
@@ -55,6 +66,14 @@ export function normalizePhoneNumber(phone: string): string {
   if (cleaned.startsWith('20')) cleaned = cleaned.substring(2);
   if (cleaned.startsWith('0')) cleaned = cleaned.substring(1);
   return cleaned;
+}
+
+/**
+ * Normalize email addresses
+ */
+export function normalizeEmail(email: string): string {
+  if (!email) return '';
+  return email.trim().toLowerCase();
 }
 
 /**
@@ -113,20 +132,28 @@ export function calculateStringSimilarity(str1: string, str2: string): number {
 }
 
 export interface CaseCheckInput {
-  caseNumber?: string;
-  externalNumber?: string;
-  title?: string;
-  clientName?: string;
   clientPhone?: string;
+  clientEmail?: string;
+  clientName?: string;
+  nationalId?: string;
+  externalNumber?: string; // Official court number or external ID
+  title?: string;
   platform?: string;
   caseType?: string;
   urls?: string[];
+  notes?: string;
   excludeCaseId?: string;
 }
 
 /**
  * Intelligent Duplicate Case Detector
- * Compares against all local and cached cases
+ * CRITICAL RULE:
+ * Case Number is NEVER a duplicate detection criterion (it is a unique generated ID).
+ * Duplicate detection relies strictly on:
+ * 1. Phone number (Exact match = high priority)
+ * 2. Email (Exact match = high priority)
+ * 3. Client Name (Exact or fuzzy match = warning for possible related case)
+ * 4. National ID / Identifiers & URLs
  */
 export function detectDuplicateCase(
   input: CaseCheckInput,
@@ -139,18 +166,22 @@ export function detectDuplicateCase(
       isDuplicate: false,
       score: 0,
       level: 'NONE',
+      matchType: 'NONE',
       matchReasonAr: '',
       matchReasonEn: '',
       matchedCase: null,
-      matchingFields: []
+      matchingFields: [],
+      isDefiniteMatch: false,
+      isNameWarningOnly: false
     };
   }
 
-  const normTitle = normalizeArabicText(input.title || '');
-  const normClientName = normalizeArabicText(input.clientName || '');
   const normPhone = normalizePhoneNumber(input.clientPhone || '');
+  const normEmail = normalizeEmail(input.clientEmail || '');
+  const normClientName = normalizeArabicText(input.clientName || '');
   const normExtNum = (input.externalNumber || '').trim().toLowerCase();
-  const normCaseNum = (input.caseNumber || '').trim().toLowerCase();
+  const normNationalId = (input.nationalId || '').trim().toLowerCase();
+  const normTitle = normalizeArabicText(input.title || '');
   const inputUrls = (input.urls || []).map(u => normalizeUrl(u)).filter(Boolean);
 
   let bestMatch: CaseItem | null = null;
@@ -158,47 +189,66 @@ export function detectDuplicateCase(
   let matchReasonsAr: string[] = [];
   let matchReasonsEn: string[] = [];
   let matchedFields: string[] = [];
+  let detectedMatchType: DuplicateMatchType = 'NONE';
+  let isDefinite = false;
+  let isNameOnly = false;
 
   for (const existing of casesToSearch) {
+    if (!existing) continue;
     // Skip self if editing
     if (input.excludeCaseId && existing.id === input.excludeCaseId) continue;
-    // Skip soft-deleted cases from duplicate warning unless exact match
-    if (existing.isDeleted) continue;
+    // Skip soft-deleted cases
+    if (existing.isDeleted || (existing as any)._deleted) continue;
 
     let currentScore = 0;
     const currentReasonsAr: string[] = [];
     const currentReasonsEn: string[] = [];
     const currentFields: string[] = [];
+    let itemHasDefiniteMatch = false;
 
-    // 1. Exact Official / External Case Number Match (100%)
-    if (normExtNum && existing.externalNumber) {
-      const existingExt = existing.externalNumber.trim().toLowerCase();
-      if (normExtNum === existingExt) {
-        currentScore += 100;
-        currentReasonsAr.push(`تطابق تام في رقم القضية الرسمي/المحكمة (${existing.externalNumber})`);
-        currentReasonsEn.push(`Exact match in official court case number (${existing.externalNumber})`);
-        currentFields.push('externalNumber');
-      }
-    }
-
-    // 2. Exact Case Number Match (100%)
-    if (normCaseNum && existing.caseNumber) {
-      if (normCaseNum === existing.caseNumber.trim().toLowerCase()) {
-        currentScore += 100;
-        currentReasonsAr.push(`تطابق تام في رقم القضية الداخلي (${existing.caseNumber})`);
-        currentReasonsEn.push(`Exact match in internal case number (${existing.caseNumber})`);
-        currentFields.push('caseNumber');
-      }
-    }
-
-    // 3. Client Phone Number Match (85%)
-    if (normPhone && normPhone.length >= 6 && existing.client?.phone) {
-      const existingPhone = normalizePhoneNumber(existing.client.phone);
+    // 1. Phone Number Match (Highest Priority: 95%)
+    if (normPhone && normPhone.length >= 6) {
+      const existingPhone = normalizePhoneNumber(existing.client?.phone || (existing.client as any)?.whatsapp || '');
       if (existingPhone && (existingPhone === normPhone || existingPhone.endsWith(normPhone) || normPhone.endsWith(existingPhone))) {
-        currentScore += 85;
-        currentReasonsAr.push(`تطابق في رقم هاتف الموكل (${existing.client.phone})`);
-        currentReasonsEn.push(`Match in client phone number (${existing.client.phone})`);
+        currentScore += 95;
+        currentReasonsAr.push(`تطابق دقيق في رقم هاتف العميل (${existing.client?.phone || existingPhone})`);
+        currentReasonsEn.push(`Exact match in client phone (${existing.client?.phone || existingPhone})`);
         currentFields.push('clientPhone');
+        itemHasDefiniteMatch = true;
+      }
+    }
+
+    // 2. Email Address Match (Highest Priority: 95%)
+    if (normEmail && normEmail.includes('@') && existing.client?.email) {
+      const existingEmail = normalizeEmail(existing.client.email);
+      if (existingEmail && existingEmail === normEmail) {
+        currentScore += 95;
+        currentReasonsAr.push(`تطابق دقيق في البريد الإلكتروني (${existing.client.email})`);
+        currentReasonsEn.push(`Exact match in client email (${existing.client.email})`);
+        currentFields.push('clientEmail');
+        itemHasDefiniteMatch = true;
+      }
+    }
+
+    // 3. National ID or External Identifier Match (90%)
+    if (normNationalId) {
+      const existingId = (existing.client as any)?.nationalId || (existing.typeSpecificData as any)?.nationalId;
+      if (existingId && String(existingId).trim().toLowerCase() === normNationalId) {
+        currentScore += 90;
+        currentReasonsAr.push(`تطابق في الرقم الوطني/الهوية (${normNationalId})`);
+        currentReasonsEn.push(`Match in National ID (${normNationalId})`);
+        currentFields.push('nationalId');
+        itemHasDefiniteMatch = true;
+      }
+    }
+
+    if (normExtNum && existing.externalNumber) {
+      if (normExtNum === existing.externalNumber.trim().toLowerCase()) {
+        currentScore += 85;
+        currentReasonsAr.push(`تطابق في رقم القضية الرسمي/المحكمة (${existing.externalNumber})`);
+        currentReasonsEn.push(`Match in official court case number (${existing.externalNumber})`);
+        currentFields.push('externalNumber');
+        itemHasDefiniteMatch = true;
       }
     }
 
@@ -218,56 +268,50 @@ export function detectDuplicateCase(
           currentReasonsAr.push(`تطابق في رابط الحساب/المستند المرفق`);
           currentReasonsEn.push(`Match in target URL/link`);
           currentFields.push('url');
+          itemHasDefiniteMatch = true;
           break;
         }
       }
     }
 
-    // 5. Client Name Similarity
-    if (normClientName && existing.client?.name) {
+    // 5. Client Name Similarity (Warning Level: 50-65% - Potential Related Case)
+    if (normClientName && normClientName.length >= 3 && existing.client?.name) {
       const existingClientName = normalizeArabicText(existing.client.name);
       if (existingClientName) {
         if (normClientName === existingClientName) {
-          currentScore += 70;
-          currentReasonsAr.push(`تطابق تام في اسم الموكل (${existing.client.name})`);
-          currentReasonsEn.push(`Exact match in client name (${existing.client.name})`);
+          // Exact name match
+          currentScore += 65;
+          currentReasonsAr.push(`تشابه تام في اسم العميل (${existing.client.name})`);
+          currentReasonsEn.push(`Exact client name match (${existing.client.name})`);
           currentFields.push('clientName');
         } else {
+          // Fuzzy name match
           const sim = calculateStringSimilarity(normClientName, existingClientName);
-          if (sim >= 0.8) {
+          if (sim >= 0.82) {
             const added = Math.round(sim * 55);
             currentScore += added;
-            currentReasonsAr.push(`تشابه قوي في اسم الموكل بنسبة ${Math.round(sim * 100)}% مع (${existing.client.name})`);
-            currentReasonsEn.push(`High similarity in client name (${Math.round(sim * 100)}%) with (${existing.client.name})`);
+            currentReasonsAr.push(`تشابه قوي في اسم العميل بنسبة ${Math.round(sim * 100)}% مع (${existing.client.name})`);
+            currentReasonsEn.push(`Name similarity (${Math.round(sim * 100)}%) with (${existing.client.name})`);
             currentFields.push('clientName');
           }
         }
       }
     }
 
-    // 6. Case Title Similarity
-    if (normTitle && existing.title) {
+    // 6. Case Title / Topic Similarity (Supplementary: up to 35%)
+    if (normTitle && normTitle.length >= 4 && existing.title) {
       const existingTitle = normalizeArabicText(existing.title);
       if (normTitle === existingTitle) {
-        currentScore += 50;
-        currentReasonsAr.push(`تطابق تام في عنوان القضية`);
-        currentReasonsEn.push(`Exact match in case title`);
+        currentScore += 35;
+        currentReasonsAr.push(`تطابق في موضوع القضية`);
         currentFields.push('title');
       } else {
         const sim = calculateStringSimilarity(normTitle, existingTitle);
-        if (sim >= 0.75) {
-          currentScore += Math.round(sim * 40);
-          currentReasonsAr.push(`تشابه في موضوع وعنوان القضية (${Math.round(sim * 100)}%)`);
-          currentReasonsEn.push(`Similarity in case title (${Math.round(sim * 100)}%)`);
+        if (sim >= 0.8) {
+          currentScore += Math.round(sim * 25);
+          currentReasonsAr.push(`تقارب في موضوع القضية (${Math.round(sim * 100)}%)`);
           currentFields.push('title');
         }
-      }
-    }
-
-    // 7. Same Case Type & Platform Boost
-    if (input.caseType && existing.caseType && input.caseType === existing.caseType) {
-      if (input.platform && existing.platform && input.platform.toLowerCase() === existing.platform.toLowerCase()) {
-        currentScore += 15;
       }
     }
 
@@ -280,23 +324,43 @@ export function detectDuplicateCase(
       matchReasonsAr = currentReasonsAr;
       matchReasonsEn = currentReasonsEn;
       matchedFields = currentFields;
+      isDefinite = itemHasDefiniteMatch;
+      isNameOnly = !itemHasDefiniteMatch && currentFields.includes('clientName');
+
+      if (currentFields.includes('clientPhone') && currentFields.includes('clientEmail')) {
+        detectedMatchType = 'MULTIPLE';
+      } else if (currentFields.includes('clientPhone')) {
+        detectedMatchType = 'EXACT_PHONE';
+      } else if (currentFields.includes('clientEmail')) {
+        detectedMatchType = 'EXACT_EMAIL';
+      } else if (currentFields.includes('nationalId') || currentFields.includes('externalNumber')) {
+        detectedMatchType = 'EXACT_IDENTIFIER';
+      } else if (currentFields.includes('clientName')) {
+        detectedMatchType = 'NAME_SIMILARITY';
+      } else {
+        detectedMatchType = 'NONE';
+      }
     }
   }
 
+  // Threshold for triggering duplicate alert
   if (highestScore >= 50 && bestMatch) {
     let level: 'EXACT' | 'HIGH' | 'MEDIUM' | 'LOW' = 'LOW';
-    if (highestScore >= 95) level = 'EXACT';
-    else if (highestScore >= 75) level = 'HIGH';
+    if (highestScore >= 90) level = 'EXACT';
+    else if (highestScore >= 70) level = 'HIGH';
     else if (highestScore >= 50) level = 'MEDIUM';
 
     return {
       isDuplicate: true,
       score: highestScore,
       level,
+      matchType: detectedMatchType,
       matchReasonAr: matchReasonsAr.join(' • '),
       matchReasonEn: matchReasonsEn.join(' • '),
       matchedCase: bestMatch,
-      matchingFields: matchedFields
+      matchingFields: matchedFields,
+      isDefiniteMatch: isDefinite,
+      isNameWarningOnly: isNameOnly
     };
   }
 
@@ -304,9 +368,12 @@ export function detectDuplicateCase(
     isDuplicate: false,
     score: highestScore,
     level: 'NONE',
+    matchType: 'NONE',
     matchReasonAr: '',
     matchReasonEn: '',
     matchedCase: null,
-    matchingFields: []
+    matchingFields: [],
+    isDefiniteMatch: false,
+    isNameWarningOnly: false
   };
 }

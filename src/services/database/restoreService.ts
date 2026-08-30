@@ -1,5 +1,5 @@
 import { db } from '../../lib/firebase';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc, setDoc } from 'firebase/firestore';
 import { UserProfile } from '../../types';
 import { logAuditAndEvent } from '../../lib/audit';
 import { 

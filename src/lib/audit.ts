@@ -5,7 +5,7 @@ import { UserProfile } from '../types';
 export interface AuditParams {
   action: string;
   details?: string;
-  entityType: 'case' | 'task' | 'reminder' | 'payment' | 'user' | 'attachment' | 'link' | 'auth' | 'settings' | 'request' | 'external_request' | 'google_sync' | 'finance' | 'employee_allocation' | 'security' | 'inventory' | 'asset' | 'system';
+  entityType: 'case' | 'task' | 'reminder' | 'payment' | 'user' | 'attachment' | 'link' | 'auth' | 'settings' | 'request' | 'external_request' | 'google_sync' | 'finance' | 'employee_allocation' | 'security' | 'inventory' | 'asset' | 'system' | 'section' | 'tab' | 'role' | 'supervisor_ui' | 'support_portal' | 'manual_article';
   entityId?: string;
   entityTitle?: string;
   caseId?: string;

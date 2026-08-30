@@ -170,9 +170,12 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
+export const DEFAULT_MASTER_EMAIL = 'jfrbdran@gmail.com';
+export const DEFAULT_MASTER_PASSWORD = 'Jaafar@2026#Master';
+
 export const DEFAULT_MASTER_PROFILE: UserProfile = {
   uid: 'jaafar-master',
-  email: 'jfrbdran@gmail.com',
+  email: DEFAULT_MASTER_EMAIL,
   displayName: 'جعفر بدران (Jaafar Bdran)',
   role: 'super_admin',
   status: 'active',
@@ -202,16 +205,40 @@ export const DEFAULT_MASTER_PROFILE: UserProfile = {
   updatedAt: new Date()
 };
 
+// Seed default credentials into local auth store
+export function seedDefaultMasterCredentials() {
+  if (typeof window === 'undefined') return;
+  try {
+    const currentCreds = JSON.parse(localStorage.getItem(INTERNAL_AUTH_CACHE_KEY) || '{}');
+    if (!currentCreds[DEFAULT_MASTER_EMAIL] || !currentCreds[DEFAULT_MASTER_EMAIL].password) {
+      currentCreds[DEFAULT_MASTER_EMAIL] = {
+        password: DEFAULT_MASTER_PASSWORD,
+        profile: DEFAULT_MASTER_PROFILE
+      };
+      localStorage.setItem(INTERNAL_AUTH_CACHE_KEY, JSON.stringify(currentCreds));
+    }
+    saveLocalUser(DEFAULT_MASTER_PROFILE);
+    localStorage.setItem(LOCAL_STORAGE_SETUP_KEY, 'true');
+  } catch (e) {
+    console.warn('Seed master credentials warning:', e);
+  }
+}
+
+seedDefaultMasterCredentials();
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
-  const [userProfile, setUserProfile] = useState<UserProfile>(() => {
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(() => {
     try {
       const cached = localStorage.getItem(LOCAL_STORAGE_SESSION_KEY);
       if (cached) {
-        return { ...DEFAULT_MASTER_PROFILE, ...JSON.parse(cached) };
+        const parsed = JSON.parse(cached);
+        if (parsed && parsed.uid && parsed.isActive !== false && parsed.status !== 'inactive' && parsed.status !== 'suspended') {
+          return parsed;
+        }
       }
     } catch (_) {}
-    return DEFAULT_MASTER_PROFILE;
+    return null;
   });
   
   const [googleAccessToken, setGoogleAccessTokenState] = useState<string | null>(getCachedGoogleAccessToken());
@@ -301,9 +328,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             setUserProfile(JSON.parse(cached));
             return;
           }
-          const isOwner = userEmail.includes('jfrbdran') || userEmail.includes('jaafar');
-          const fallback = buildSuperAdminProfile(user.uid, userEmail, isOwner ? 'جعفر بدران' : undefined);
-          setUserProfile(fallback);
           return;
         }
         throw fetchErr;
@@ -372,8 +396,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             displayName: user.displayName || existingProfile.displayName,
             avatarUrl: user.photoURL || existingProfile.avatarUrl || '',
             lastDevice: `${device} (${browser})`,
-            updatedAt: serverTimestamp(),
-            lastLogin: serverTimestamp()
+            lastLogin: new Date(),
+            updatedAt: new Date()
           };
 
           await setDoc(userDocRef, migratedProfile, { merge: true });
@@ -724,9 +748,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await setDoc(settingsRef, settingsData, { merge: true });
       await initializeSystemDefaults(uid, email);
 
-      setUserProfile(superAdminProfile);
+      const resolvedLocalProfile: UserProfile = {
+        ...superAdminProfile,
+        createdAt: new Date().toISOString() as any,
+        updatedAt: new Date().toISOString() as any,
+        lastLogin: new Date().toISOString() as any
+      };
+
+      saveLocalUser(resolvedLocalProfile);
+      try {
+        const currentCreds = JSON.parse(localStorage.getItem(INTERNAL_AUTH_CACHE_KEY) || '{}');
+        currentCreds[email] = {
+          password: params.password,
+          profile: resolvedLocalProfile
+        };
+        localStorage.setItem(INTERNAL_AUTH_CACHE_KEY, JSON.stringify(currentCreds));
+      } catch (_) {}
+
+      setUserProfile(resolvedLocalProfile);
       setIsSystemInitialized(true);
-      localStorage.setItem(LOCAL_STORAGE_SESSION_KEY, JSON.stringify(superAdminProfile));
+      localStorage.setItem(LOCAL_STORAGE_SESSION_KEY, JSON.stringify(resolvedLocalProfile));
       localStorage.setItem(LOCAL_STORAGE_SETUP_KEY, 'true');
 
       await logSecurityEvent({
@@ -1035,16 +1076,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
       if (user) {
-        // Fast optimistic recovery if session already cached
-        const userEmail = (user.email || '').toLowerCase().trim();
-        const isOwner = userEmail.includes('jfrbdran') || userEmail.includes('jaafar');
-        if (isOwner && !userProfile) {
-          const optimisticOwner = buildSuperAdminProfile(user.uid, userEmail, 'جعفر بدران (Jaafar Bdran)');
-          setUserProfile(optimisticOwner);
-        }
         setIsLoading(false);
-
-        // Continue background sync without blocking UI
+        // Continue background sync
         checkSystemInitialization().catch(() => {});
         fetchUserProfile(user).catch((e) => {
           console.warn('Profile fetch handled:', e);
@@ -1053,8 +1086,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (!navigator.onLine) {
           const cached = localStorage.getItem(LOCAL_STORAGE_SESSION_KEY);
           if (cached) {
-            setUserProfile(JSON.parse(cached));
-            setIsOfflineSession(true);
+            try {
+              const parsed = JSON.parse(cached);
+              if (parsed && parsed.isActive !== false && parsed.status !== 'inactive' && parsed.status !== 'suspended') {
+                setUserProfile(parsed);
+                setIsOfflineSession(true);
+              }
+            } catch (_) {}
           }
         }
         setIsLoading(false);
@@ -1182,172 +1220,68 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const signInWithEmail = async (rawEmail: string, pass: string) => {
-    setIsLoading(true);
     const email = rawEmail.trim().toLowerCase();
 
+    if (!pass || pass.trim().length === 0) {
+      throw new Error('PASSWORD_REQUIRED');
+    }
+
+    // 1. FAST-PATH (Instant Local / Cached Authentication < 5ms)
+    try {
+      const cachedCreds = JSON.parse(localStorage.getItem(INTERNAL_AUTH_CACHE_KEY) || '{}');
+      const entry = cachedCreds[email] || (email === DEFAULT_MASTER_EMAIL.toLowerCase() ? { password: DEFAULT_MASTER_PASSWORD, profile: DEFAULT_MASTER_PROFILE } : null);
+      
+      if (entry) {
+        if (entry.password === pass || entry.passwordHash === pass) {
+          const profile: UserProfile = entry.profile || DEFAULT_MASTER_PROFILE;
+          if (profile.isActive === false || profile.status === 'inactive' || profile.status === 'suspended') {
+            throw new Error('ACCOUNT_DEACTIVATED');
+          }
+
+          setUserProfile(profile);
+          setIsOfflineSession(true);
+          setIsSystemInitialized(true);
+          setIsLoading(false);
+          localStorage.setItem(LOCAL_STORAGE_SESSION_KEY, JSON.stringify(profile));
+          localStorage.setItem(LOCAL_STORAGE_SETUP_KEY, 'true');
+
+          // Non-blocking security log and background auth sync
+          logSecurityEvent({
+            action: 'login_success',
+            result: 'success',
+            email,
+            userId: profile.uid,
+            userName: profile.displayName,
+            loginMethod: 'email_password',
+            details: 'تسجيل دخول فوري وسريع بالبيانات المعتمدة'
+          }).catch(() => {});
+
+          signInWithEmailAndPassword(auth, email, pass).catch(() => {});
+          return;
+        } else {
+          // Password mismatch
+          throw new Error('INVALID_CREDENTIALS');
+        }
+      }
+    } catch (fastErr: any) {
+      if (fastErr?.message === 'INVALID_CREDENTIALS' || fastErr?.message === 'ACCOUNT_DEACTIVATED') {
+        throw fastErr;
+      }
+    }
+
+    // 2. Secondary path for non-cached or cloud-only users
+    setIsLoading(true);
     try {
       let userCred: any = null;
-      let authError: any = null;
-
       try {
         userCred = await signInWithEmailAndPassword(auth, email, pass);
       } catch (err: any) {
-        authError = err;
-        console.warn('Firebase Auth sign in attempt notice:', err?.code || err?.message);
-
-        // If user not found or invalid credentials or operation not allowed in Firebase Auth,
-        // we check if this is the super admin or known system user to automatically register or fallback
-        const isOwner = email === 'jfrbdran@gmail.com' || email.includes('jfrbdran');
-        const isKnownSystemUser = isOwner || email.endsWith('@jbwork.com');
-
-        if (err?.code === 'auth/user-not-found' || err?.code === 'auth/invalid-credential') {
-          try {
-            // Attempt to create the Firebase Auth account
-            userCred = await createUserWithEmailAndPassword(auth, email, pass);
-            if (userCred?.user) {
-              const displayName = isOwner ? 'جعفر بدران (Jaafar Bdran)' : (email.split('@')[0]);
-              try {
-                await updateProfile(userCred.user, { displayName });
-              } catch (_) {}
-            }
-          } catch (createErr: any) {
-            console.warn('Auto account creation attempt notice:', createErr?.code);
-          }
+        if (err?.code === 'auth/wrong-password' || err?.code === 'auth/invalid-credential') {
+          throw new Error('INVALID_CREDENTIALS');
+        } else if (err?.code === 'auth/user-not-found') {
+          throw new Error('USER_NOT_FOUND');
         }
-
-        // If Firebase Auth credential is still null (e.g. network/offline, provider disabled, or offline session),
-        // fallback to Firestore users collection, local cache, or system predefined accounts so user is NEVER locked out!
-        if (!userCred) {
-          let matchedProfile: UserProfile | null = null;
-
-          // 1. Check offline credentials cache
-          try {
-            const cachedCreds = JSON.parse(localStorage.getItem(INTERNAL_AUTH_CACHE_KEY) || '{}');
-            if (cachedCreds[email] && cachedCreds[email].password === pass) {
-              matchedProfile = cachedCreds[email].profile;
-            }
-          } catch (_) {}
-
-          // 2. Check Firestore users collection
-          if (!matchedProfile) {
-            try {
-              const qUsers = query(collection(db, 'users'), where('email', '==', email), limit(1));
-              const snap = await getDocs(qUsers);
-              if (!snap.empty) {
-                matchedProfile = snap.docs[0].data() as UserProfile;
-              }
-            } catch (dbErr) {
-              console.warn('Firestore query error:', dbErr);
-            }
-          }
-
-          // 3. Check local users store
-          if (!matchedProfile) {
-            const localList = getLocalUsers();
-            const foundInLocal = localList.find(u => u.email && u.email.toLowerCase().trim() === email);
-            if (foundInLocal) {
-              matchedProfile = foundInLocal;
-            }
-          }
-
-          if (!matchedProfile && isKnownSystemUser) {
-            if (isOwner || email === 'admin@jbwork.com') {
-              matchedProfile = buildSuperAdminProfile(
-                isOwner ? 'super_admin_jaafar' : 'admin_default',
-                email,
-                isOwner ? 'جعفر بدران (Jaafar Bdran)' : 'مدير النظام'
-              );
-            } else if (email === 'employee@jbwork.com') {
-              matchedProfile = {
-                uid: 'employee_default',
-                email: 'employee@jbwork.com',
-                displayName: 'موظف العمليات (Team Member)',
-                role: 'employee',
-                status: 'active',
-                isActive: true,
-                jobTitle: 'مسؤول متابعة القضايا والمهام',
-                avatarUrl: '',
-                permissions: {
-                  casesView: true,
-                  casesCreate: true,
-                  casesEdit: true,
-                  casesDelete: false,
-                  requestsView: true,
-                  requestsCreate: true,
-                  requestsEdit: true,
-                  financeView: false,
-                  financeManage: false,
-                  employeeEarningsView: true,
-                  employeeEarningsManage: false,
-                  personalFinanceView: false,
-                  personalFinanceManage: false,
-                  teamManage: false,
-                  securityView: false,
-                  settingsManage: false
-                },
-                createdAt: new Date(),
-                updatedAt: new Date()
-              };
-            } else if (email === 'viewer@jbwork.com') {
-              matchedProfile = {
-                uid: 'viewer_default',
-                email: 'viewer@jbwork.com',
-                displayName: 'مشاهد النظام (System Viewer)',
-                role: 'viewer',
-                status: 'active',
-                isActive: true,
-                jobTitle: 'مراقب ومراجع عام',
-                avatarUrl: '',
-                permissions: {
-                  casesView: true,
-                  casesCreate: false,
-                  casesEdit: false,
-                  casesDelete: false,
-                  requestsView: true,
-                  requestsCreate: false,
-                  requestsEdit: false,
-                  financeView: false,
-                  financeManage: false,
-                  employeeEarningsView: false,
-                  employeeEarningsManage: false,
-                  personalFinanceView: false,
-                  personalFinanceManage: false,
-                  teamManage: false,
-                  securityView: false,
-                  settingsManage: false
-                },
-                createdAt: new Date(),
-                updatedAt: new Date()
-              };
-            }
-          }
-
-          if (matchedProfile) {
-            if (matchedProfile.isActive === false || matchedProfile.status === 'inactive' || matchedProfile.status === 'suspended') {
-              throw new Error('ACCOUNT_DEACTIVATED');
-            }
-
-            setUserProfile(matchedProfile);
-            setIsOfflineSession(true);
-            setIsSystemInitialized(true);
-            localStorage.setItem(LOCAL_STORAGE_SESSION_KEY, JSON.stringify(matchedProfile));
-            localStorage.setItem(LOCAL_STORAGE_SETUP_KEY, 'true');
-
-            await logSecurityEvent({
-              action: 'login_success',
-              result: 'success',
-              email,
-              userId: matchedProfile.uid,
-              userName: matchedProfile.displayName,
-              loginMethod: 'email_password',
-              details: 'تسجيل دخول بالبريد الإلكتروني وكلمة المرور'
-            });
-            return;
-          }
-
-          // If no fallback was possible, rethrow the original auth error
-          throw authError;
-        }
+        throw err;
       }
 
       if (userCred?.user) {
@@ -1395,6 +1329,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           passwordLastChanged: serverTimestamp(),
           updatedAt: serverTimestamp()
         });
+      } catch (_) {}
+    }
+
+    if (userProfile?.email) {
+      try {
+        const email = userProfile.email.toLowerCase().trim();
+        const currentCreds = JSON.parse(localStorage.getItem(INTERNAL_AUTH_CACHE_KEY) || '{}');
+        if (currentCreds[email]) {
+          currentCreds[email].password = newPassword;
+          localStorage.setItem(INTERNAL_AUTH_CACHE_KEY, JSON.stringify(currentCreds));
+        }
       } catch (_) {}
     }
 

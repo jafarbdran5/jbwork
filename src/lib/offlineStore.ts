@@ -17,7 +17,173 @@ const LOCAL_ATTACHMENT_KEY = 'jb_local_case_attachments';
 const DEVICE_TRUST_KEY = 'jb_device_trusted';
 const LOCAL_USERS_KEY = 'jb_local_team_members';
 const LOCAL_CASES_KEY = 'jb_cached_cases';
+const LOCAL_TASKS_KEY = 'jb_cached_tasks';
+const LOCAL_RECEPTION_REQUESTS_KEY = 'jb_cached_reception_requests';
+const LOCAL_CLIENTS_KEY = 'jb_cached_clients';
 const LOCAL_CASE_COUNTER_PREFIX = 'jb_case_counter_';
+
+// -------------------------------------------------------------
+// RECEPTION REQUESTS HELPERS
+// -------------------------------------------------------------
+export function getLocalReceptionRequests(): any[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_RECEPTION_REQUESTS_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw);
+  } catch (e) {
+    return [];
+  }
+}
+
+export function saveLocalReceptionRequest(item: any) {
+  try {
+    const list = getLocalReceptionRequests();
+    const idx = list.findIndex((r: any) => r.id === item.id);
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], ...item, updatedAt: new Date().toISOString() };
+    } else {
+      list.unshift({ ...item, createdAt: item.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() });
+    }
+    localStorage.setItem(LOCAL_RECEPTION_REQUESTS_KEY, JSON.stringify(list));
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'reception_requests' } }));
+  } catch (e) {
+    console.warn('Failed to save reception request locally:', e);
+  }
+}
+
+export function removeLocalReceptionRequest(id: string) {
+  try {
+    const list = getLocalReceptionRequests().filter((r: any) => r.id !== id);
+    localStorage.setItem(LOCAL_RECEPTION_REQUESTS_KEY, JSON.stringify(list));
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'reception_requests' } }));
+  } catch (e) {
+    console.warn(e);
+  }
+}
+
+// -------------------------------------------------------------
+// ALL TASKS HELPERS
+// -------------------------------------------------------------
+export function getLocalAllTasks(): any[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_TASKS_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw);
+  } catch (e) {
+    return [];
+  }
+}
+
+export function saveLocalAllTask(task: any) {
+  try {
+    const list = getLocalAllTasks();
+    const idx = list.findIndex((t: any) => t.id === task.id);
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], ...task, updatedAt: new Date().toISOString() };
+    } else {
+      list.unshift({ ...task, createdAt: task.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() });
+    }
+    localStorage.setItem(LOCAL_TASKS_KEY, JSON.stringify(list));
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'tasks' } }));
+  } catch (e) {
+    console.warn('Failed to save task locally:', e);
+  }
+}
+
+export function removeLocalAllTask(id: string) {
+  try {
+    const list = getLocalAllTasks().filter((t: any) => t.id !== id);
+    localStorage.setItem(LOCAL_TASKS_KEY, JSON.stringify(list));
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'tasks' } }));
+  } catch (e) {
+    console.warn(e);
+  }
+}
+
+// -------------------------------------------------------------
+// CLIENTS HELPERS
+// -------------------------------------------------------------
+export function getLocalAllClients(): any[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_CLIENTS_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw);
+  } catch (e) {
+    return [];
+  }
+}
+
+export function saveLocalAllClient(client: any) {
+  try {
+    const list = getLocalAllClients();
+    const idx = list.findIndex((c: any) => c.id === client.id);
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], ...client, updatedAt: new Date().toISOString() };
+    } else {
+      list.unshift({ ...client, createdAt: client.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() });
+    }
+    localStorage.setItem(LOCAL_CLIENTS_KEY, JSON.stringify(list));
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'clients' } }));
+  } catch (e) {
+    console.warn('Failed to save client locally:', e);
+  }
+}
+
+export function removeLocalAllClient(id: string) {
+  try {
+    const list = getLocalAllClients().filter((c: any) => c.id !== id);
+    localStorage.setItem(LOCAL_CLIENTS_KEY, JSON.stringify(list));
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'clients' } }));
+  } catch (e) {
+    console.warn(e);
+  }
+}
+
+// -------------------------------------------------------------
+// BULK PURGE / RESET HELPERS
+// -------------------------------------------------------------
+export function performBulkDataPurge(targets: {
+  cases?: boolean;
+  tasks?: boolean;
+  requests?: boolean;
+  clients?: boolean;
+  auditLogs?: boolean;
+  allDataExceptMaster?: boolean;
+}): { success: boolean; messageAr: string } {
+  try {
+    if (targets.allDataExceptMaster) {
+      localStorage.removeItem(LOCAL_CASES_KEY);
+      localStorage.removeItem(LOCAL_TASKS_KEY);
+      localStorage.removeItem(LOCAL_RECEPTION_REQUESTS_KEY);
+      localStorage.removeItem(LOCAL_CLIENTS_KEY);
+      localStorage.removeItem(LOCAL_ATTACHMENT_KEY);
+      localStorage.removeItem('jb_audit_logs');
+      localStorage.removeItem('jb_saved_public_sheets');
+    } else {
+      if (targets.cases) {
+        localStorage.removeItem(LOCAL_CASES_KEY);
+        localStorage.removeItem(LOCAL_ATTACHMENT_KEY);
+      }
+      if (targets.tasks) {
+        localStorage.removeItem(LOCAL_TASKS_KEY);
+      }
+      if (targets.requests) {
+        localStorage.removeItem(LOCAL_RECEPTION_REQUESTS_KEY);
+      }
+      if (targets.clients) {
+        localStorage.removeItem(LOCAL_CLIENTS_KEY);
+      }
+      if (targets.auditLogs) {
+        localStorage.removeItem('jb_audit_logs');
+      }
+    }
+
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'bulk_purge' } }));
+    return { success: true, messageAr: 'تم تنفيذ الحذف وتحديث البيانات بنجاح' };
+  } catch (e: any) {
+    return { success: false, messageAr: e?.message || 'فشل في إتمام عملية الحذف' };
+  }
+}
 
 export function getLocalCases(): any[] {
   try {

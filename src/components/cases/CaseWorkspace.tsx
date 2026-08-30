@@ -38,6 +38,7 @@ import {
   useNetworkStatus,
   getLocalCases,
   saveLocalCase,
+  removeLocalCase,
   getLocalCaseTasks,
   saveLocalCaseTask,
   getLocalCaseReminders,
@@ -1000,13 +1001,36 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
   // Soft Delete Case
   const handleSoftDelete = async () => {
     if (!caseData) return;
-    const confirm = window.confirm(isRTL ? `هل أنت متأكد من نقل القضية (${caseData.caseNumber || ''} - ${caseData.title || ''}) إلى سلة المهملات؟` : 'Move this case to Recycle Bin?');
+    const confirm = window.confirm(isRTL ? `هل أنت متأكد من حذف/نقل القضية (${caseData.caseNumber || ''} - ${caseData.title || ''}) إلى سلة المهملات؟` : 'Move this case to Recycle Bin?');
     if (!confirm) return;
 
+    // 1. Clean from local caches
+    removeLocalCase(caseId);
+    if (caseData.caseNumber) {
+      removeLocalCase(caseData.caseNumber);
+    }
+    try {
+      const all = getLocalCases().filter(c => 
+        c.id !== caseId && 
+        (!caseData.caseNumber || c.caseNumber !== caseData.caseNumber)
+      );
+      localStorage.setItem('jb_cached_cases', JSON.stringify(all));
+    } catch (_) {}
+
+    // 2. Unified deletion service
     await deleteEntity('case', caseId, userProfile, {
       customTitle: `${caseData.caseNumber || ''} - ${caseData.title || ''}`,
       reason: 'نقل القضية من مساحة العمل إلى سلة المهملات'
     });
+
+    // 3. Direct Firestore delete
+    try {
+      await deleteDoc(doc(db, 'cases', caseId));
+    } catch (_) {}
+
+    // 4. Global events
+    window.dispatchEvent(new CustomEvent('jb_entity_deleted', { detail: { entityType: 'case', id: caseId } }));
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'cases', entityType: 'case' } }));
 
     onBack();
   };

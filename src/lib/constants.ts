@@ -1,4 +1,5 @@
 import { CaseTypeConfig, PlatformConfig } from '../types';
+import { getAppLabel, getAppLabelEn, getSavedLabels } from './dynamicLabelsStore';
 
 export const DEFAULT_PLATFORMS: PlatformConfig[] = [
   { id: 'facebook', name: 'Facebook', nameAr: 'فيسبوك', icon: 'Facebook', isActive: true, sortOrder: 1, isPopular: true },
@@ -277,3 +278,103 @@ export const DEFAULT_CASE_TYPES: CaseTypeConfig[] = [
     ]
   }
 ];
+
+/**
+ * Returns all active case types with dynamic custom names applied and custom added types included.
+ */
+export function getDynamicCaseTypes(): CaseTypeConfig[] {
+  const allLabels = getSavedLabels();
+  
+  // Base default types with dynamic labels
+  const baseTypes: CaseTypeConfig[] = DEFAULT_CASE_TYPES.map(ct => {
+    const internalId = `case_type_${ct.id}`;
+    const labelItem = allLabels.find(l => l.id === internalId);
+    return {
+      ...ct,
+      labelAr: getAppLabel(internalId, ct.labelAr),
+      labelEn: getAppLabelEn(internalId, ct.labelEn || ct.labelAr),
+      isActive: labelItem ? !labelItem.hidden : ct.isActive
+    };
+  }).filter(ct => ct.isActive);
+
+  // Custom added case types
+  const customTypes = allLabels
+    .filter(l => l.category === 'case_types' && l.isCustomCreated && !l.hidden)
+    .map(l => ({
+      id: l.id.replace('case_type_', ''),
+      key: l.id.replace('case_type_', ''),
+      labelAr: l.customLabelAr || l.defaultLabelAr,
+      labelEn: l.customLabelEn || l.defaultLabelEn || l.defaultLabelAr,
+      icon: 'FolderPlus',
+      isActive: true,
+      sortOrder: 100,
+      isSystem: false,
+      fields: [
+        { key: 'subject', labelAr: 'الموضوع', labelEn: 'Subject', type: 'text' as const },
+        { key: 'description', labelAr: 'الوصف والتفاصيل', labelEn: 'Description', type: 'textarea' as const },
+        { key: 'notes', labelAr: 'ملاحظات', labelEn: 'Notes', type: 'textarea' as const },
+      ]
+    }));
+
+  return [...baseTypes, ...customTypes];
+}
+
+/**
+ * Resolves the label for a specific case type ID
+ */
+export function getCaseTypeLabel(typeKey: string, isRTL: boolean = true): string {
+  const internalId = `case_type_${typeKey}`;
+  const defaultFound = DEFAULT_CASE_TYPES.find(t => t.id === typeKey || t.key === typeKey);
+  const fallback = defaultFound ? (isRTL ? defaultFound.labelAr : (defaultFound.labelEn || defaultFound.labelAr)) : typeKey;
+  return isRTL ? getAppLabel(internalId, fallback) : getAppLabelEn(internalId, fallback);
+}
+
+/**
+ * Resolves the label for a case status
+ */
+export function getCaseStatusLabel(statusKey: string, isRTL: boolean = true): string {
+  const internalId = `status_${statusKey}`;
+  const fallbacksAr: Record<string, string> = {
+    new: 'جديدة',
+    in_progress: 'قيد المتابعة والعمل',
+    pending_client: 'بانتظار العميل',
+    pending_platform: 'بانتظار المنصة',
+    completed: 'مكتملة وناجحة',
+    rejected: 'مرفوضة / ملغاة',
+    cancelled: 'ملغاة'
+  };
+  const fallback = fallbacksAr[statusKey] || statusKey;
+  return isRTL ? getAppLabel(internalId, fallback) : getAppLabelEn(internalId, fallback);
+}
+
+/**
+ * Resolves the label for a task status
+ */
+export function getTaskStatusLabel(statusKey: string, isRTL: boolean = true): string {
+  const internalId = `task_status_${statusKey}`;
+  const fallbacksAr: Record<string, string> = {
+    todo: 'قيد الانتظار (To Do)',
+    in_progress: 'جاري التنفيذ',
+    review: 'قيد المراجعة والتدقيق',
+    done: 'تم الإنجاز بنجاح',
+    cancelled: 'ملغاة'
+  };
+  const fallback = fallbacksAr[statusKey] || statusKey;
+  return isRTL ? getAppLabel(internalId, fallback) : getAppLabelEn(internalId, fallback);
+}
+
+/**
+ * Resolves the label for priority
+ */
+export function getPriorityLabel(priorityKey: string, isRTL: boolean = true): string {
+  const internalId = `priority_${priorityKey}`;
+  const fallbacksAr: Record<string, string> = {
+    urgent: 'طارئ جداً (حرج)',
+    high: 'أولوية عالية',
+    medium: 'أولوية متوسطة',
+    low: 'أولوية منخفضة / روتينية'
+  };
+  const fallback = fallbacksAr[priorityKey] || priorityKey;
+  return isRTL ? getAppLabel(internalId, fallback) : getAppLabelEn(internalId, fallback);
+}
+

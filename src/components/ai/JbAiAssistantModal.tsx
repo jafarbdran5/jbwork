@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../lib/auth';
 import { useI18n } from '../../lib/i18n';
 import { executeAssistantCommand } from './assistantTools';
@@ -16,7 +16,10 @@ import {
   AlertTriangle,
   Users,
   Copy,
-  Check
+  Check,
+  RotateCcw,
+  ExternalLink,
+  FolderOpen
 } from 'lucide-react';
 
 interface ChatMessage {
@@ -25,9 +28,14 @@ interface ChatMessage {
   text: string;
   timestamp: string;
   data?: any;
+  error?: boolean;
 }
 
-export const JbAiAssistantModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ isOpen, onClose }) => {
+export const JbAiAssistantModal: React.FC<{ isOpen: boolean; onClose: () => void; onNavigate?: (view: string) => void }> = ({ 
+  isOpen, 
+  onClose,
+  onNavigate 
+}) => {
   const { userProfile, isSuperAdmin, isAdmin } = useAuth();
   const { isRTL } = useI18n();
 
@@ -36,16 +44,27 @@ export const JbAiAssistantModal: React.FC<{ isOpen: boolean; onClose: () => void
       id: 'init',
       sender: 'ai',
       text: isRTL 
-        ? `مرحباً ${userProfile?.displayName || 'جعفر'}! أنا المساعد التنفيذي لمنظومة جعفر بدران (JAAFAR BDRAN SYSTEM).
-أنا متصل مباشرة بقاعدة بيانات المنظومة محلياً للبحث في القضايا، إدارة المهام، كشف التكرارات، وتحليل البيانات المالية.` 
-        : `Hello ${userProfile?.displayName || 'Jaafar'}! I am your executive assistant in JAAFAR BDRAN SYSTEM.
-Directly connected to the local database to search cases, manage tasks, detect duplicates, and review analytics.`,
+        ? `مرحباً ${userProfile?.displayName?.split(' ')[0] || 'بك'}! أنا المساعد الذكي لمنظومة جعفر بدران.
+أنا متصل مباشرة ببيانات القضايا، الطلبات الخارجية، المهام، وأعضاء الفريق. يمكنك سؤالي عن أي قضية أو طلب، أو البحث، أو إنشاء المهام والقضايا مباشرة.` 
+        : `Hello! I am your AI Operations Assistant for Jaafar Bdran System.
+Directly connected to cases, external requests, tasks, and team members. Ask me anything or command actions.`,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }
   ]);
   const [inputText, setInputText] = useState('');
   const [isThinking, setIsThinking] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      scrollToBottom();
+    }
+  }, [messages, isThinking, isOpen]);
 
   if (!isOpen) return null;
 
@@ -82,11 +101,15 @@ Directly connected to the local database to search cases, manage tasks, detect d
 
       setMessages(prev => [...prev, aiMsg]);
     } catch (e: any) {
+      console.error('Assistant execution error:', e);
       const errorMsg: ChatMessage = {
         id: `ai_${Date.now()}`,
         sender: 'ai',
-        text: isRTL ? `حدث خطأ أثناء معالجة الطلب: ${e.message}` : `Error processing request: ${e.message}`,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        text: isRTL 
+          ? `عذراً، حدث خطأ أثناء معالجة استفسارك: ${e?.message || 'خطأ غير معروف'}. يرجى التحقق من صياغة السؤال والمحاولة مرة أخرى.` 
+          : `Error processing request: ${e?.message || 'Unknown error'}`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        error: true
       };
       setMessages(prev => [...prev, errorMsg]);
     } finally {
@@ -101,11 +124,11 @@ Directly connected to the local database to search cases, manage tasks, detect d
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-      <div className="bg-[#121214] border border-[#27272A] rounded-2xl w-full max-w-2xl h-[600px] flex flex-col shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+      <div className="bg-[#121214] border border-[#27272A] rounded-2xl w-full max-w-2xl h-[85vh] max-h-[650px] flex flex-col shadow-2xl overflow-hidden">
         
         {/* Header */}
-        <div className="p-4 border-b border-[#27272A] bg-gradient-to-r from-indigo-950/40 via-[#18181B] to-[#18181B] flex items-center justify-between">
+        <div className="p-4 border-b border-[#27272A] bg-[#18181B] flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-indigo-500/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400">
               <Sparkles className="w-5 h-5" />
@@ -114,21 +137,25 @@ Directly connected to the local database to search cases, manage tasks, detect d
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 {isRTL ? 'المساعد الذكي لمنظومة جعفر بدران' : 'JB System AI Assistant'}
                 <span className="text-[10px] bg-emerald-500/20 text-emerald-400 font-semibold px-2 py-0.5 rounded-full border border-emerald-500/30">
-                  100% Offline Database Connected
+                  متصل ومفعل
                 </span>
               </h3>
               <p className="text-[11px] text-[#A1A1AA]">
-                {isRTL ? 'أدوات بحث حية ومباشرة في القضايا والمهام والأمان' : 'Direct live operations & case query engine'}
+                {isRTL ? 'استعلام مباشر في القضايا، الطلبات، والمهام' : 'Direct search & case operations'}
               </p>
             </div>
           </div>
 
-          <button onClick={onClose} className="p-1.5 text-[#71717A] hover:text-white rounded-lg hover:bg-[#27272A] cursor-pointer">
+          <button 
+            onClick={onClose} 
+            className="p-2 text-[#71717A] hover:text-white rounded-lg hover:bg-[#27272A] cursor-pointer transition-colors"
+            title={isRTL ? 'إغلاق' : 'Close'}
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Quick Command Chips */}
+        {/* Quick Suggestion Chips */}
         <div className="px-4 py-2.5 border-b border-[#27272A] bg-[#18181B]/60 flex items-center gap-2 overflow-x-auto text-[11px] no-scrollbar">
           <button
             onClick={() => handleSendMessage(isRTL ? 'اعرضلي القضايا النشطة' : 'Show active cases')}
@@ -139,11 +166,19 @@ Directly connected to the local database to search cases, manage tasks, detect d
           </button>
 
           <button
+            onClick={() => handleSendMessage(isRTL ? 'الطلبات الخارجية المربوطة' : 'External requests')}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#27272A] hover:bg-[#3F3F46] text-[#D4D4D8] hover:text-white whitespace-nowrap cursor-pointer transition-colors"
+          >
+            <FolderOpen className="w-3.5 h-3.5 text-cyan-400" />
+            {isRTL ? 'الطلبات الخارجية' : 'External Requests'}
+          </button>
+
+          <button
             onClick={() => handleSendMessage(isRTL ? 'شو عندي اليوم؟' : 'What do I have today?')}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#27272A] hover:bg-[#3F3F46] text-[#D4D4D8] hover:text-white whitespace-nowrap cursor-pointer transition-colors"
           >
             <Lightbulb className="w-3.5 h-3.5 text-amber-400" />
-            {isRTL ? 'شو عندي اليوم؟' : 'My Day & Tasks'}
+            {isRTL ? 'خطة اليوم' : 'My Day'}
           </button>
           
           <button
@@ -151,7 +186,7 @@ Directly connected to the local database to search cases, manage tasks, detect d
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#27272A] hover:bg-[#3F3F46] text-[#D4D4D8] hover:text-white whitespace-nowrap cursor-pointer transition-colors"
           >
             <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
-            {isRTL ? 'فحص القضايا المكررة' : 'Scan Duplicates'}
+            {isRTL ? 'فحص التكرارات' : 'Duplicates'}
           </button>
 
           {isSuperAdmin && (
@@ -165,11 +200,11 @@ Directly connected to the local database to search cases, manage tasks, detect d
           )}
 
           <button
-            onClick={() => handleSendMessage(isRTL ? 'استعراض أعضاء الفريق' : 'Show team members')}
+            onClick={() => handleSendMessage(isRTL ? 'استعراض المشرفين وفريق العمل' : 'Show team members')}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#27272A] hover:bg-[#3F3F46] text-[#D4D4D8] hover:text-white whitespace-nowrap cursor-pointer transition-colors"
           >
             <Users className="w-3.5 h-3.5 text-blue-400" />
-            {isRTL ? 'أعضاء الفريق' : 'Team'}
+            {isRTL ? 'المشرفين والفريق' : 'Team'}
           </button>
         </div>
 
@@ -186,12 +221,14 @@ Directly connected to the local database to search cases, manage tasks, detect d
                 </div>
               )}
 
-              <div className="max-w-[85%] group relative">
+              <div className="max-w-[88%] group relative">
                 <div
                   className={`p-3.5 rounded-2xl whitespace-pre-wrap leading-relaxed ${
                     m.sender === 'user'
                       ? 'bg-indigo-600 text-white rounded-br-none'
-                      : 'bg-[#18181B] border border-[#27272A] text-zinc-200 rounded-bl-none shadow-sm'
+                      : m.error 
+                        ? 'bg-rose-950/40 border border-rose-800/60 text-rose-200 rounded-bl-none shadow-sm'
+                        : 'bg-[#18181B] border border-[#27272A] text-zinc-200 rounded-bl-none shadow-sm'
                   }`}
                 >
                   {m.text}
@@ -229,18 +266,17 @@ Directly connected to the local database to search cases, manage tasks, detect d
           ))}
 
           {isThinking && (
-            <div className="flex gap-3 items-center text-zinc-400 text-xs">
+            <div className="flex gap-3 items-center text-zinc-400 text-xs animate-in fade-in duration-100">
               <div className="w-8 h-8 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
                 <Sparkles className="w-4 h-4 animate-spin" />
               </div>
-              <div className="bg-[#18181B] border border-[#27272A] px-4 py-2.5 rounded-2xl text-zinc-400 flex items-center gap-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce" />
-                <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce [animation-delay:0.2s]" />
-                <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce [animation-delay:0.4s]" />
-                <span className="text-xs">{isRTL ? 'جاري فحص قاعدة البيانات وتنفيذ الأمر...' : 'Querying local database & executing tool...'}</span>
+              <div className="bg-[#18181B] border border-[#27272A] px-4 py-2.5 rounded-2xl text-zinc-300 flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse" />
+                <span className="text-xs font-medium">{isRTL ? 'جاري التفكير ومعالجة البيانات...' : 'Thinking and querying system database...'}</span>
               </div>
             </div>
           )}
+          <div ref={messagesEndRef} />
         </div>
 
         {/* Input Bar */}
@@ -257,15 +293,15 @@ Directly connected to the local database to search cases, manage tasks, detect d
             }}
             placeholder={
               isRTL 
-                ? 'اكتب طلبك أو أمرك هنا (مثال: اعرضلي القضايا النشطة، أضف مهمة، دورلي على التكرارات)...' 
-                : 'Ask a question or enter command (e.g. Show active cases, create task)...'
+                ? 'اكتب سؤالك أو أمرك هنا (مثلاً: ابحث عن قضية احمد، اعرض القضايا، انشئ مهمة)...' 
+                : 'Ask a question or enter command (e.g. Search case, show requests, create task)...'
             }
             className="flex-1 bg-[#121214] border border-[#27272A] focus:border-indigo-500 focus:outline-none rounded-xl px-4 py-2.5 text-sm text-white placeholder-zinc-500 transition-colors"
           />
           <button
             onClick={() => handleSendMessage()}
             disabled={!inputText.trim() || isThinking}
-            className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white px-4 py-2.5 rounded-xl font-medium flex items-center gap-2 text-sm transition-colors cursor-pointer shrink-0"
+            className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white px-4 py-2.5 rounded-xl font-medium flex items-center gap-2 text-sm transition-colors cursor-pointer shrink-0 min-h-[44px]"
           >
             <Send className="w-4 h-4" />
             <span className="hidden sm:inline">{isRTL ? 'إرسال' : 'Send'}</span>

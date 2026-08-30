@@ -29,6 +29,7 @@ import {
   deletePublicSheet, 
   fetchPublicGoogleSheet, 
   discoverSheetTabs,
+  discoverSpreadsheetMetadata,
   extractSheetInfo, 
   extractFilesAndLinksFromRow,
   getGoogleDrivePreviewUrl,
@@ -75,8 +76,20 @@ import {
   UserPlus,
   CheckSquare,
   Compass,
-  ArrowUpDown
+  ArrowUpDown,
+  Download,
+  BarChart3,
+  Filter,
+  CheckCheck
 } from 'lucide-react';
+import { SheetStatsCards } from './SheetStatsCards';
+import { AddSheetModal } from './AddSheetModal';
+import { SheetTableView } from './SheetTableView';
+import { SheetCardsView } from './SheetCardsView';
+import { LinkCaseModal } from './LinkCaseModal';
+import { RowDetailsModal } from './RowDetailsModal';
+import { ManualRequestModal } from './ManualRequestModal';
+import { DrivePreviewModal } from './DrivePreviewModal';
 
 interface ExternalRequestsModuleProps {
   onSelectCase?: (caseId: string) => void;
@@ -260,6 +273,31 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
   const currentSheet = useMemo(() => {
     return sheets.find(s => s.id === selectedSheetId) || sheets[0] || null;
   }, [sheets, selectedSheetId]);
+
+  // Auto-discover worksheets for current sheet if fewer than 2 tabs
+  useEffect(() => {
+    if (!currentSheet || !currentSheet.sheetId || !currentSheet.url) return;
+    if ((currentSheet.tabs || []).length <= 1 && !isDiscoveringTabs) {
+      // Run discovery automatically
+      discoverSheetTabs(currentSheet.sheetId).then(discoveredTabs => {
+        if (discoveredTabs && discoveredTabs.length > 1) {
+          const existingGids = new Set((currentSheet.tabs || []).map(t => t.gid));
+          const combinedTabs = [...(currentSheet.tabs || [])];
+          discoveredTabs.forEach(t => {
+            if (!existingGids.has(t.gid)) {
+              combinedTabs.push(t);
+            }
+          });
+          const updated: SavedPublicSheet = {
+            ...currentSheet,
+            tabs: combinedTabs
+          };
+          savePublicSheet(updated);
+          setSheets(getSavedPublicSheets());
+        }
+      }).catch(() => {});
+    }
+  }, [currentSheet?.id, currentSheet?.sheetId]);
 
   // Handle Worksheet Tab Switch
   const handleSwitchTab = async (sheetId: string, tab: SheetWorksheetTab) => {
@@ -502,6 +540,58 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
     return filteredRows.slice(start, start + itemsPerPage);
   }, [filteredRows, currentPage, itemsPerPage]);
 
+  // Sheet Statistics Summary
+  const sheetStats = useMemo(() => {
+    if (!currentSheet || !currentSheet.rows) {
+      return {
+        totalRows: 0,
+        convertedCases: 0,
+        withFiles: 0,
+        newUnlinked: 0,
+        tabsCount: 0
+      };
+    }
+    const rows = currentSheet.rows;
+    const convertedCases = rows.filter(r => r._systemStatus === 'case_created' || r._linkedCaseNumber).length;
+    const withFiles = rows.filter(r => r._hasFiles || (r._fileUrls && r._fileUrls.length > 0)).length;
+    const newUnlinked = rows.filter(r => !r._linkedCaseId && !r._linkedClientId && !r._linkedTaskId).length;
+    const tabsCount = (currentSheet.tabs || []).length || 1;
+
+    return {
+      totalRows: rows.length,
+      convertedCases,
+      withFiles,
+      newUnlinked,
+      tabsCount
+    };
+  }, [currentSheet]);
+
+  // Export to CSV
+  const handleExportToCsv = () => {
+    if (!currentSheet || !currentSheet.rows || currentSheet.rows.length === 0) {
+      alert('لا توجد بيانات متاحة للتصدير في هذا الجدول');
+      return;
+    }
+    const headers = currentSheet.columns.map(c => `"${c.label.replace(/"/g, '""')}"`);
+    const rowsCsv = currentSheet.rows.map(r => {
+      return currentSheet.columns.map(c => {
+        const val = r[c.id] ?? '';
+        return `"${String(val).replace(/"/g, '""')}"`;
+      }).join(',');
+    });
+    const csvContent = '\uFEFF' + [headers.join(','), ...rowsCsv].join('\r\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const cleanTitle = (currentSheet.title || 'google_sheet').replace(/[^a-zA-Z0-9\u0600-\u06FF_-]/g, '_');
+    link.setAttribute('download', `${cleanTitle}_export.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast('✓ تم تصدير بيانات الجدول إلى ملف CSV بنجاح!');
+  };
+
   // Test URL in Add Sheet Modal
   const handleTestUrl = async () => {
     if (!formUrl.trim()) return;
@@ -509,23 +599,22 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
     setTestResult(null);
 
     try {
+      // Discover metadata & tabs
+      const meta = await discoverSpreadsheetMetadata(formUrl);
       const res = await fetchPublicGoogleSheet(formUrl, formGid);
-      const info = extractSheetInfo(formUrl);
-      let discoveredTabs: SheetWorksheetTab[] = [];
-      if (info.sheetId) {
-        discoveredTabs = await discoverSheetTabs(info.sheetId);
-      }
+
+      const discoveredTabs = meta.tabs && meta.tabs.length > 0 ? meta.tabs : [];
 
       setTestResult({
         success: true,
-        message: `✓ تم الاتصال بنجاح! تم العثور على ${res.totalRows} صف و ${res.columns.length} عمود.`,
+        message: `✓ تم الاتصال والتعرف على الجدول بنجاح! تم العثور على ${res.totalRows} صف، ${res.columns.length} عمود، و ${discoveredTabs.length || 1} أوراق عمل.`,
         rowCount: res.totalRows,
         columns: res.columns,
         discoveredTabs: discoveredTabs.length > 0 ? discoveredTabs : undefined
       });
 
       if (!formTitle.trim()) {
-        setFormTitle(`استجابات نموذج Google (${new Date().toLocaleDateString('ar-EG')})`);
+        setFormTitle(meta.title || `استجابات نموذج Google (${new Date().toLocaleDateString('ar-EG')})`);
       }
     } catch (e: any) {
       setTestResult({
@@ -1114,9 +1203,42 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
                 )}
               </div>
 
-              {/* Sheet Control Buttons */}
+              {/* Sheet Control Buttons & Function Mapping */}
               {currentSheet && (
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-2 flex-wrap shrink-0">
+                  {/* Function Mapping Selector */}
+                  <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl border text-xs ${
+                    isDark ? 'bg-zinc-900 border-zinc-800' : 'bg-slate-50 border-slate-200'
+                  }`}>
+                    <span className="text-[11px] font-bold text-indigo-400">الوظيفة:</span>
+                    <select
+                      value={currentSheet.targetModule || 'cases'}
+                      onChange={(e) => {
+                        const newModule = e.target.value as any;
+                        const updated: SavedPublicSheet = { ...currentSheet, targetModule: newModule };
+                        savePublicSheet(updated);
+                        setSheets(getSavedPublicSheets());
+                        showToast(`✓ تم ضبط وظيفة الشيت إلى: ${
+                          newModule === 'cases' ? 'قسم القضايا' :
+                          newModule === 'clients' ? 'قسم العملاء' :
+                          newModule === 'financials' ? 'قسم المالية' :
+                          newModule === 'consultations' ? 'قسم الاستشارات' :
+                          newModule === 'requests' ? 'قسم الطلبات الخارجية' : 'جدول عام'
+                        }`);
+                      }}
+                      className={`bg-transparent text-xs font-bold focus:outline-none cursor-pointer ${
+                        isDark ? 'text-zinc-200' : 'text-slate-800'
+                      }`}
+                    >
+                      <option value="cases" className={isDark ? 'bg-zinc-900 text-white' : 'bg-white text-slate-900'}>📁 قسم القضايا</option>
+                      <option value="clients" className={isDark ? 'bg-zinc-900 text-white' : 'bg-white text-slate-900'}>👥 قسم العملاء</option>
+                      <option value="financials" className={isDark ? 'bg-zinc-900 text-white' : 'bg-white text-slate-900'}>💰 قسم المالية</option>
+                      <option value="consultations" className={isDark ? 'bg-zinc-900 text-white' : 'bg-white text-slate-900'}>⚖️ قسم الاستشارات</option>
+                      <option value="requests" className={isDark ? 'bg-zinc-900 text-white' : 'bg-white text-slate-900'}>📥 الطلبات الخارجية</option>
+                      <option value="general" className={isDark ? 'bg-zinc-900 text-white' : 'bg-white text-slate-900'}>📊 جدول عام</option>
+                    </select>
+                  </div>
+
                   <button
                     onClick={() => handleSyncSheet(currentSheet)}
                     disabled={currentSheet.syncStatus === 'syncing'}
@@ -1126,7 +1248,7 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
                     title="تحديث البيانات من الشيت"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${currentSheet.syncStatus === 'syncing' ? 'animate-spin text-indigo-400' : ''}`} />
-                    <span>تحديث البيانات</span>
+                    <span>تحديث</span>
                   </button>
 
                   <button
@@ -1138,7 +1260,7 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
                     title="فحص واكتشاف كافة أوراق العمل في الملف"
                   >
                     <Compass className={`w-3.5 h-3.5 ${isDiscoveringTabs ? 'animate-spin' : ''}`} />
-                    <span>اكتشاف الأوراق (Auto-Tabs)</span>
+                    <span>اكتشاف الأوراق</span>
                   </button>
 
                   {currentSheet.url && (
@@ -1336,322 +1458,50 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
           {currentSheet && currentSheet.rows && currentSheet.rows.length > 0 ? (
             <div>
               {viewMode === 'table' ? (
-                /* TABLE VIEW */
-                <div className={`rounded-2xl border overflow-hidden transition-all ${
-                  isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200 shadow-xs'
-                }`}>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-start text-xs">
-                      <thead className={`border-b text-slate-400 font-bold uppercase ${
-                        isDark ? 'bg-zinc-900/90 border-[#27272A]' : 'bg-slate-50 border-slate-200'
-                      }`}>
-                        <tr>
-                          <th className="p-3 text-start w-12">#</th>
-                          <th className="p-3 text-start">حالة المنظومة والربط</th>
-                          {currentSheet.columns.slice(0, 7).map(col => (
-                            <th 
-                              key={col.id}
-                              onClick={() => {
-                                if (sortColumn === col.id) {
-                                  setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc');
-                                } else {
-                                  setSortColumn(col.id);
-                                  setSortDirection('desc');
-                                }
-                              }}
-                              className="p-3 text-start cursor-pointer hover:text-indigo-400 transition-colors whitespace-nowrap"
-                            >
-                              <div className="flex items-center gap-1">
-                                <span>{col.label}</span>
-                                <ArrowUpDown className="w-3 h-3 opacity-60" />
-                              </div>
-                            </th>
-                          ))}
-                          <th className="p-3 text-center">المرفقات والروابط</th>
-                          <th className="p-3 text-center">الإجراءات والتحويل</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-zinc-800/40">
-                        {paginatedRows.map((row, rIdx) => {
-                          const rowNum = (currentPage - 1) * itemsPerPage + rIdx + 1;
-                          const rowInfo = getRowDetails(row, currentSheet);
-
-                          return (
-                            <tr
-                              key={row._rowId || rIdx}
-                              className={`transition-colors ${
-                                isDark ? 'hover:bg-zinc-800/40' : 'hover:bg-slate-50'
-                              } ${row._linkedCaseId ? (isDark ? 'bg-emerald-950/10' : 'bg-emerald-50/30') : ''}`}
-                            >
-                              {/* Row Number */}
-                              <td className="p-3 font-mono text-slate-400 text-[11px]">
-                                {rowNum}
-                              </td>
-
-                              {/* System Status Badges */}
-                              <td className="p-3 whitespace-nowrap">
-                                {row._linkedCaseNumber ? (
-                                  <span className="inline-flex items-center gap-1 text-[11px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-md">
-                                    <CheckCircle2 className="w-3 h-3" />
-                                    <span>قضية {row._linkedCaseNumber}</span>
-                                  </span>
-                                ) : row._linkedClientName ? (
-                                  <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20 px-2 py-0.5 rounded-md">
-                                    <User className="w-3 h-3" />
-                                    <span>عميل مسجل</span>
-                                  </span>
-                                ) : row._linkedTaskTitle ? (
-                                  <span className="inline-flex items-center gap-1 text-[11px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded-md">
-                                    <CheckSquare className="w-3 h-3" />
-                                    <span>مهمة معينة</span>
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex items-center gap-1 text-[11px] font-medium bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded-md">
-                                    <Clock className="w-3 h-3" />
-                                    <span>جديد / غير معالج</span>
-                                  </span>
-                                )}
-                              </td>
-
-                              {/* Columns Data */}
-                              {currentSheet.columns.slice(0, 7).map(col => {
-                                const val = row[col.id] ?? '';
-                                const strVal = String(val);
-                                const analyzed = analyzeCellValue(strVal);
-
-                                return (
-                                  <td key={col.id} className="p-3 max-w-[220px] truncate text-slate-300">
-                                    {analyzed.isPhone ? (
-                                      <a
-                                        href={`tel:${strVal}`}
-                                        className="text-indigo-400 hover:underline flex items-center gap-1 font-mono"
-                                      >
-                                        <Phone className="w-3 h-3" />
-                                        <span>{strVal}</span>
-                                      </a>
-                                    ) : analyzed.isEmail ? (
-                                      <a
-                                        href={`mailto:${strVal}`}
-                                        className="text-indigo-400 hover:underline flex items-center gap-1"
-                                      >
-                                        <Mail className="w-3 h-3" />
-                                        <span className="truncate">{strVal}</span>
-                                      </a>
-                                    ) : analyzed.isDrive ? (
-                                      <button
-                                        onClick={() => setPreviewingFile({ url: strVal, title: col.label })}
-                                        className="text-emerald-400 hover:underline flex items-center gap-1 cursor-pointer font-semibold"
-                                      >
-                                        <Eye className="w-3 h-3" />
-                                        <span>معاينة المستند</span>
-                                      </button>
-                                    ) : (
-                                      <span title={strVal}>{strVal || '—'}</span>
-                                    )}
-                                  </td>
-                                );
-                              })}
-
-                              {/* Attachments & URLs */}
-                              <td className="p-3 text-center whitespace-nowrap">
-                                <div className="flex items-center justify-center gap-1.5">
-                                  {rowInfo.fileLinks.length > 0 && (
-                                    <button
-                                      onClick={() => setPreviewingFile({ url: rowInfo.fileLinks[0], title: 'مرفق النموذج' })}
-                                      className="p-1 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 text-xs flex items-center gap-1 px-2 cursor-pointer font-bold"
-                                      title="معاينة المستند المرفق من Drive"
-                                    >
-                                      <Eye className="w-3 h-3" />
-                                      <span>{rowInfo.fileLinks.length} ملف</span>
-                                    </button>
-                                  )}
-
-                                  {rowInfo.allUrls.length > 0 && (
-                                    <button
-                                      onClick={() => handleCopy(rowInfo.allUrls[0], `url_${rIdx}`)}
-                                      className="p-1.5 rounded-lg bg-zinc-800 text-zinc-400 hover:text-white cursor-pointer"
-                                      title="نسخ الرابط"
-                                    >
-                                      {copiedId === `url_${rIdx}` ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                                    </button>
-                                  )}
-                                </div>
-                              </td>
-
-                              {/* Row Quick Actions */}
-                              <td className="p-3 text-center whitespace-nowrap">
-                                <div className="flex items-center justify-center gap-1.5">
-                                  
-                                  {/* Convert to Case */}
-                                  <button
-                                    onClick={() => handleCreateCaseFromRow(row)}
-                                    disabled={isConvertingAction}
-                                    className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1 cursor-pointer transition-all shadow-xs"
-                                    title="تحويل هذه الاستجابة إلى ملف قضية جديد فوراً"
-                                  >
-                                    <FolderPlus className="w-3.5 h-3.5" />
-                                    <span>فتح قضية</span>
-                                  </button>
-
-                                  {/* Link to Existing Case */}
-                                  <button
-                                    onClick={() => {
-                                      setLinkingRow(row);
-                                      setIsLinkToCaseModalOpen(true);
-                                    }}
-                                    className={`p-1.5 rounded-lg border text-xs cursor-pointer ${
-                                      isDark ? 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:text-white' : 'bg-slate-100 border-slate-300 text-slate-700'
-                                    }`}
-                                    title="ربط بقضية قائمة في المنظومة"
-                                  >
-                                    <LinkIcon className="w-3.5 h-3.5 text-indigo-400" />
-                                  </button>
-
-                                  {/* Inspect Row Details */}
-                                  <button
-                                    onClick={() => setInspectingRow(row)}
-                                    className={`p-1.5 rounded-lg border text-xs cursor-pointer ${
-                                      isDark ? 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white' : 'bg-slate-100 border-slate-300 text-slate-700'
-                                    }`}
-                                    title="معاينة تفاصيل الاستجابة كاملة"
-                                  >
-                                    <Eye className="w-3.5 h-3.5" />
-                                  </button>
-
-                                </div>
-                              </td>
-
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {/* Pagination Footer */}
-                  <div className={`p-4 border-t flex items-center justify-between text-xs ${
-                    isDark ? 'bg-zinc-900/50 border-[#27272A] text-slate-400' : 'bg-slate-50 border-slate-200 text-slate-600'
-                  }`}>
-                    <div>
-                      عرض {(currentPage - 1) * itemsPerPage + 1} إلى {Math.min(currentPage * itemsPerPage, filteredRows.length)} من إجمالي {filteredRows.length} صف
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-                        disabled={currentPage === 1}
-                        className="px-3 py-1.5 rounded-lg border disabled:opacity-40 cursor-pointer"
-                      >
-                        السابق
-                      </button>
-                      <span className="font-bold text-white">صفحة {currentPage} من {totalPages}</span>
-                      <button
-                        onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-                        disabled={currentPage === totalPages}
-                        className="px-3 py-1.5 rounded-lg border disabled:opacity-40 cursor-pointer"
-                      >
-                        التالي
-                      </button>
-                    </div>
-                  </div>
-
-                </div>
+                <SheetTableView
+                  currentSheet={currentSheet}
+                  filteredRows={filteredRows}
+                  paginatedRows={paginatedRows}
+                  currentPage={currentPage}
+                  totalPages={totalPages}
+                  itemsPerPage={itemsPerPage}
+                  setCurrentPage={setCurrentPage}
+                  sortColumn={sortColumn}
+                  sortDirection={sortDirection}
+                  onSort={(colId) => {
+                    if (sortColumn === colId) {
+                      setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc');
+                    } else {
+                      setSortColumn(colId);
+                      setSortDirection('desc');
+                    }
+                  }}
+                  getRowDetails={getRowDetails}
+                  onPreviewFile={(f) => setPreviewingFile(f)}
+                  onInspectRow={(r) => setInspectingRow(r)}
+                  onLinkToCase={(r) => {
+                    setLinkingRow(r);
+                    setIsLinkToCaseModalOpen(true);
+                  }}
+                  onCreateCase={(r) => handleCreateCaseFromRow(r)}
+                  isConvertingAction={isConvertingAction}
+                  copiedId={copiedId}
+                  onCopy={handleCopy}
+                />
               ) : (
-                /* CARDS VIEW */
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {paginatedRows.map((row, rIdx) => {
-                    const rowInfo = getRowDetails(row, currentSheet);
-                    return (
-                      <div
-                        key={row._rowId || rIdx}
-                        className={`p-5 rounded-2xl border transition-all flex flex-col justify-between ${
-                          isDark ? 'bg-[#18181B] border-[#27272A] hover:border-zinc-700' : 'bg-white border-slate-200 shadow-xs'
-                        } ${row._linkedCaseId ? 'ring-1 ring-emerald-500/40' : ''}`}
-                      >
-                        <div className="space-y-3">
-                          {/* Card Top Badges */}
-                          <div className="flex items-center justify-between">
-                            <span className="text-[11px] font-mono text-slate-400">#{(currentPage - 1) * itemsPerPage + rIdx + 1}</span>
-                            {row._linkedCaseNumber ? (
-                              <span className="text-[11px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-md">
-                                قضية {row._linkedCaseNumber}
-                              </span>
-                            ) : (
-                              <span className="text-[11px] bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded-md">
-                                استجابة واردة
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Client Name / Header */}
-                          <div className="font-bold text-base text-white">
-                            {rowInfo.clientName || 'استجابة بدون اسم محدد'}
-                          </div>
-
-                          {/* Contact Info */}
-                          <div className="space-y-1 text-xs">
-                            {rowInfo.phone && (
-                              <div className="flex items-center gap-2 text-indigo-400 font-mono">
-                                <Phone className="w-3.5 h-3.5" />
-                                <span>{rowInfo.phone}</span>
-                              </div>
-                            )}
-                            {rowInfo.email && (
-                              <div className="flex items-center gap-2 text-slate-400">
-                                <Mail className="w-3.5 h-3.5" />
-                                <span className="truncate">{rowInfo.email}</span>
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Notes / Description Summary */}
-                          <p className="text-xs text-slate-400 line-clamp-3 leading-relaxed">
-                            {rowInfo.notesSummary || 'لا توجد تفاصيل إضافية'}
-                          </p>
-
-                          {/* Files */}
-                          {rowInfo.fileLinks.length > 0 && (
-                            <div className="pt-2 border-t border-zinc-800 flex items-center gap-2">
-                              <span className="text-xs text-emerald-400 font-bold flex items-center gap-1">
-                                <Paperclip className="w-3.5 h-3.5" />
-                                <span>{rowInfo.fileLinks.length} ملفات مرفقة (Drive)</span>
-                              </span>
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Action Buttons */}
-                        <div className="pt-4 mt-4 border-t border-zinc-800/80 flex items-center justify-between gap-2">
-                          <button
-                            onClick={() => setInspectingRow(row)}
-                            className="px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold cursor-pointer"
-                          >
-                            معاينة
-                          </button>
-
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              onClick={() => {
-                                setLinkingRow(row);
-                                setIsLinkToCaseModalOpen(true);
-                              }}
-                              className="p-1.5 rounded-xl border border-zinc-700 text-zinc-300 hover:text-white text-xs cursor-pointer"
-                              title="ربط بقضية مسجلة"
-                            >
-                              <LinkIcon className="w-4 h-4 text-indigo-400" />
-                            </button>
-                            <button
-                              onClick={() => handleCreateCaseFromRow(row)}
-                              className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer"
-                            >
-                              <FolderPlus className="w-3.5 h-3.5" />
-                              <span>فتح قضية</span>
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                <SheetCardsView
+                  currentSheet={currentSheet}
+                  paginatedRows={paginatedRows}
+                  currentPage={currentPage}
+                  itemsPerPage={itemsPerPage}
+                  getRowDetails={getRowDetails}
+                  onInspectRow={(r) => setInspectingRow(r)}
+                  onLinkToCase={(r) => {
+                    setLinkingRow(r);
+                    setIsLinkToCaseModalOpen(true);
+                  }}
+                  onCreateCase={(r) => handleCreateCaseFromRow(r)}
+                />
               )}
             </div>
           ) : (
@@ -1778,157 +1628,22 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
       {/* ========================================== */}
       {/* MODAL: ADD / CONNECT NEW GOOGLE SHEET */}
       {/* ========================================== */}
-      {isAddModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className={`w-full max-w-xl rounded-2xl border p-6 shadow-2xl space-y-5 animate-fade-in ${
-            isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200'
-          }`}>
-            
-            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
-              <div className="flex items-center gap-2.5">
-                <FileSpreadsheet className="w-5 h-5 text-emerald-400" />
-                <h3 className="text-base font-bold text-white">ربط Google Sheet أو نموذج استجابات</h3>
-              </div>
-              <button onClick={() => setIsAddModalOpen(false)} className="text-slate-400 hover:text-white cursor-pointer">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Mode Switcher: Direct URL vs Paste CSV/TSV */}
-            <div className="grid grid-cols-2 gap-2 p-1 bg-zinc-900 border border-zinc-800 rounded-xl">
-              <button
-                type="button"
-                onClick={() => setImportMode('url')}
-                className={`py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                  importMode === 'url' ? 'bg-indigo-600 text-white' : 'text-zinc-400 hover:text-white'
-                }`}
-              >
-                رابط Google Sheets مباشر (Zero-Auth)
-              </button>
-              <button
-                type="button"
-                onClick={() => setImportMode('paste')}
-                className={`py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                  importMode === 'paste' ? 'bg-indigo-600 text-white' : 'text-zinc-400 hover:text-white'
-                }`}
-              >
-                لصق بيانات جدول (CSV / TSV)
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveNewSheet} className="space-y-4">
-              
-              {importMode === 'url' ? (
-                <>
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-zinc-300">رابط Google Sheet (أو معرف الجدول)</label>
-                    <div className="flex gap-2">
-                      <input
-                        type="text"
-                        value={formUrl}
-                        onChange={(e) => {
-                          setFormUrl(e.target.value);
-                          setTestResult(null);
-                        }}
-                        placeholder="https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit#gid=0"
-                        className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
-                        required
-                      />
-                      <button
-                        type="button"
-                        onClick={handleTestUrl}
-                        disabled={isTestingUrl || !formUrl.trim()}
-                        className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0"
-                      >
-                        <RefreshCw className={`w-3.5 h-3.5 ${isTestingUrl ? 'animate-spin' : ''}`} />
-                        <span>فحص الرابط</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  {testResult && (
-                    <div className={`p-3 rounded-xl border text-xs font-medium ${
-                      testResult.success 
-                        ? 'bg-emerald-950/30 border-emerald-800 text-emerald-300' 
-                        : 'bg-rose-950/30 border-rose-800 text-rose-300'
-                    }`}>
-                      {testResult.message}
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-bold text-zinc-300">عنوان وتسمية الجدول</label>
-                      <input
-                        type="text"
-                        value={formTitle}
-                        onChange={(e) => setFormTitle(e.target.value)}
-                        placeholder="مثال: استجابات استمارة البلاغات"
-                        className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-                        required
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-bold text-zinc-300">رقم الورقة (GID)</label>
-                      <input
-                        type="text"
-                        value={formGid}
-                        onChange={(e) => setFormGid(e.target.value)}
-                        placeholder="0"
-                        className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
-                      />
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-zinc-300">عنوان الجدول</label>
-                    <input
-                      type="text"
-                      value={formTitle}
-                      onChange={(e) => setFormTitle(e.target.value)}
-                      placeholder="مثال: بيانات طلبات واردة"
-                      className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-                      required
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-zinc-300">الصق محتوى الجدول (CSV أو منسوخ من Excel/Sheets)</label>
-                    <textarea
-                      rows={5}
-                      value={pastedData}
-                      onChange={(e) => setPastedData(e.target.value)}
-                      placeholder="الاسم	الهاتف	المنصة	التفاصيل..."
-                      className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
-                      required
-                    />
-                  </div>
-                </>
-              )}
-
-              <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-800">
-                <button
-                  type="button"
-                  onClick={() => setIsAddModalOpen(false)}
-                  className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-300 text-xs font-semibold cursor-pointer"
-                >
-                  إلغاء
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold cursor-pointer"
-                >
-                  حفظ والبدء بالقراءة
-                </button>
-              </div>
-
-            </form>
-
-          </div>
-        </div>
-      )}
+      <AddSheetModal
+        isOpen={isAddModalOpen}
+        onClose={() => setIsAddModalOpen(false)}
+        onSaveSheet={(sheet) => {
+          setSheets(prev => {
+            const updated = [sheet, ...prev.filter(s => s.id !== sheet.id)];
+            localStorage.setItem('public_google_sheets_v2', JSON.stringify(updated));
+            return updated;
+          });
+          setSelectedSheetId(sheet.id);
+          showToast(`✓ تم إضافة جدول "${sheet.title}" بنجاح!`);
+          if (sheet.url) {
+            handleSyncSheet(sheet);
+          }
+        }}
+      />
 
       {/* ========================================== */}
       {/* MODAL: ADD CUSTOM WORKSHEET TAB */}
@@ -1936,50 +1651,65 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
       {isAddTabModalOpen && currentSheet && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className={`w-full max-w-md rounded-2xl border p-6 shadow-2xl space-y-4 animate-fade-in ${
-            isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200'
+            isDark ? 'bg-[#18181B] border-[#27272A] text-white' : 'bg-white border-slate-200 text-slate-900'
           }`}>
-            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
-              <h3 className="text-sm font-bold text-white">إضافة ورقة عمل (Worksheet Tab)</h3>
-              <button onClick={() => setIsAddTabModalOpen(false)} className="text-slate-400 hover:text-white cursor-pointer">
+            <div className={`flex items-center justify-between pb-3 border-b ${
+              isDark ? 'border-zinc-800' : 'border-slate-200'
+            }`}>
+              <h3 className="text-sm font-bold">إضافة ورقة عمل (Worksheet Tab)</h3>
+              <button 
+                onClick={() => setIsAddTabModalOpen(false)} 
+                className={`p-1 rounded-lg transition-colors cursor-pointer ${
+                  isDark ? 'text-zinc-400 hover:text-white' : 'text-slate-400 hover:text-slate-700'
+                }`}
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <form onSubmit={handleAddCustomTab} className="space-y-3">
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-zinc-300">اسم الورقة</label>
+                <label className={`text-xs font-bold ${isDark ? 'text-zinc-300' : 'text-slate-700'}`}>اسم الورقة</label>
                 <input
                   type="text"
                   value={newTabName}
                   onChange={(e) => setNewTabName(e.target.value)}
                   placeholder="مثال: استجابات النموذج 2 أو العملاء"
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+                  className={`w-full rounded-xl px-3 py-2 text-xs border focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                    isDark ? 'bg-zinc-900 border-zinc-800 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
+                  }`}
                   required
                 />
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-zinc-300">معرف الورقة (GID)</label>
+                <label className={`text-xs font-bold ${isDark ? 'text-zinc-300' : 'text-slate-700'}`}>معرف الورقة (GID)</label>
                 <input
                   type="text"
                   value={newTabGid}
                   onChange={(e) => setNewTabGid(e.target.value)}
                   placeholder="مثال: 14589230 (يمكن تركه 0 للورقة الأولى)"
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  className={`w-full rounded-xl px-3 py-2 text-xs font-mono border focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                    isDark ? 'bg-zinc-900 border-zinc-800 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
+                  }`}
                 />
               </div>
 
-              <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-800">
+              <div className={`flex items-center justify-end gap-3 pt-3 border-t ${
+                isDark ? 'border-zinc-800' : 'border-slate-200'
+              }`}>
                 <button
                   type="button"
                   onClick={() => setIsAddTabModalOpen(false)}
-                  className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-300 text-xs font-semibold cursor-pointer"
+                  className={`px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer transition-colors ${
+                    isDark ? 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold cursor-pointer"
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold cursor-pointer transition-colors shadow-xs"
                 >
                   إضافة وتحميل
                 </button>
@@ -1992,279 +1722,58 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
       {/* ========================================== */}
       {/* MODAL: LINK ROW TO EXISTING CASE */}
       {/* ========================================== */}
-      {isLinkToCaseModalOpen && linkingRow && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className={`w-full max-w-lg rounded-2xl border p-6 shadow-2xl space-y-4 animate-fade-in ${
-            isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200'
-          }`}>
-            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
-              <div className="flex items-center gap-2">
-                <LinkIcon className="w-5 h-5 text-indigo-400" />
-                <h3 className="text-base font-bold text-white">ربط الاستجابة بقضية مسجلة</h3>
-              </div>
-              <button onClick={() => setIsLinkToCaseModalOpen(false)} className="text-slate-400 hover:text-white cursor-pointer">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              <div className="relative">
-                <Search className="w-4 h-4 text-slate-400 absolute top-1/2 -translate-y-1/2 start-3" />
-                <input
-                  type="text"
-                  value={caseSearchQuery}
-                  onChange={(e) => setCaseSearchQuery(e.target.value)}
-                  placeholder="ابحث برقم القضية، العنوان، أو اسم الموكل..."
-                  className="w-full ps-9 pe-4 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-white focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-
-              <div className="max-h-60 overflow-y-auto space-y-2 pe-1">
-                {systemCases
-                  .filter(c => {
-                    const q = caseSearchQuery.toLowerCase();
-                    return c.caseNumber.toLowerCase().includes(q) ||
-                           c.title.toLowerCase().includes(q) ||
-                           (c.client?.name || '').toLowerCase().includes(q);
-                  })
-                  .slice(0, 15)
-                  .map(c => (
-                    <div
-                      key={c.id}
-                      onClick={() => handleLinkRowToExistingCase(c)}
-                      className="p-3 rounded-xl border border-zinc-800 bg-zinc-900/60 hover:bg-zinc-800 hover:border-indigo-500 cursor-pointer transition-all flex items-center justify-between"
-                    >
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-mono font-bold text-indigo-400">{c.caseNumber}</span>
-                          <span className="text-xs font-bold text-white">{c.title}</span>
-                        </div>
-                        <div className="text-[11px] text-slate-400 mt-0.5">الموكل: {c.client?.name || 'غير محدد'}</div>
-                      </div>
-                      <button className="px-2.5 py-1 rounded-lg bg-indigo-600 text-white text-xs font-bold">
-                        اختيار
-                      </button>
-                    </div>
-                  ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <LinkCaseModal
+        isOpen={isLinkToCaseModalOpen}
+        onClose={() => {
+          setIsLinkToCaseModalOpen(false);
+          setLinkingRow(null);
+        }}
+        linkingRow={linkingRow}
+        systemCases={systemCases}
+        onLinkCase={handleLinkRowToExistingCase}
+      />
 
       {/* ========================================== */}
       {/* MODAL: ROW DETAILS INSPECTOR */}
       {/* ========================================== */}
-      {inspectingRow && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className={`w-full max-w-2xl max-h-[85vh] rounded-2xl border p-6 shadow-2xl space-y-4 overflow-y-auto ${
-            isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200'
-          }`}>
-            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
-              <div className="flex items-center gap-2">
-                <FileSearch className="w-5 h-5 text-indigo-400" />
-                <h3 className="text-base font-bold text-white">تفاصيل الاستجابة الكاملة</h3>
-              </div>
-              <button onClick={() => setInspectingRow(null)} className="text-slate-400 hover:text-white cursor-pointer">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              {/* Key Values Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {currentSheet?.columns.map(col => {
-                  const val = inspectingRow[col.id] ?? '';
-                  if (!val) return null;
-                  return (
-                    <div key={col.id} className="p-3 rounded-xl bg-zinc-900 border border-zinc-800 space-y-1">
-                      <div className="text-[11px] font-bold text-slate-400">{col.label}</div>
-                      <div className="text-xs text-white break-words">{String(val)}</div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Action Buttons */}
-              <div className="pt-4 border-t border-zinc-800 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleCreateClientFromRow(inspectingRow)}
-                    className="px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <UserPlus className="w-4 h-4 text-blue-400" />
-                    <span>إضافة كموكل</span>
-                  </button>
-                  <button
-                    onClick={() => handleCreateTaskFromRow(inspectingRow)}
-                    className="px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <CheckSquare className="w-4 h-4 text-amber-400" />
-                    <span>إنشاء مهمة</span>
-                  </button>
-                </div>
-
-                <button
-                  onClick={() => handleCreateCaseFromRow(inspectingRow)}
-                  className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-2 cursor-pointer"
-                >
-                  <FolderPlus className="w-4 h-4" />
-                  <span>فتح ملف قضية فوري</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <RowDetailsModal
+        isOpen={!!inspectingRow}
+        onClose={() => setInspectingRow(null)}
+        row={inspectingRow}
+        sheet={currentSheet}
+        onCreateClient={handleCreateClientFromRow}
+        onCreateTask={handleCreateTaskFromRow}
+        onCreateCase={handleCreateCaseFromRow}
+      />
 
       {/* ========================================== */}
       {/* MODAL: MANUAL REQUEST ENTRY */}
       {/* ========================================== */}
-      {showManualModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className={`w-full max-w-lg rounded-2xl border p-6 shadow-2xl space-y-4 animate-fade-in ${
-            isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200'
-          }`}>
-            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
-              <h3 className="text-base font-bold text-white">إدخال طلب خارجي يدوياً</h3>
-              <button onClick={() => setShowManualModal(false)} className="text-slate-400 hover:text-white cursor-pointer">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateManualRequest} className="space-y-3">
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-zinc-300">اسم صاحب الطلب / الموكل *</label>
-                <input
-                  type="text"
-                  value={manualName}
-                  onChange={(e) => setManualName(e.target.value)}
-                  placeholder="الاسم الكامل"
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-                  required
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-zinc-300">رقم الهاتف / واتساب</label>
-                  <input
-                    type="tel"
-                    value={manualPhone}
-                    onChange={(e) => setManualPhone(e.target.value)}
-                    placeholder="+964..."
-                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-zinc-300">البريد الإلكتروني</label>
-                  <input
-                    type="email"
-                    value={manualEmail}
-                    onChange={(e) => setManualEmail(e.target.value)}
-                    placeholder="email@example.com"
-                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-zinc-300">نوع الطلب</label>
-                  <select
-                    value={manualType}
-                    onChange={(e) => setManualType(e.target.value)}
-                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-                  >
-                    {DEFAULT_CASE_TYPES.map(ct => (
-                      <option key={ct.id} value={ct.labelAr}>{ct.labelAr}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-zinc-300">المنصة</label>
-                  <select
-                    value={manualPlatform}
-                    onChange={(e) => setManualPlatform(e.target.value)}
-                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-                  >
-                    {DEFAULT_PLATFORMS.map(p => (
-                      <option key={p.id} value={p.name}>{p.nameAr}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-zinc-300">تفاصيل المشكلة والطلب</label>
-                <textarea
-                  rows={3}
-                  value={manualDescription}
-                  onChange={(e) => setManualDescription(e.target.value)}
-                  placeholder="اكتب ما ذكره العميل بالتفصيل..."
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-3 border-t border-zinc-800">
-                <button
-                  type="button"
-                  onClick={() => setShowManualModal(false)}
-                  className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-300 text-xs font-semibold cursor-pointer"
-                >
-                  إلغاء
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold cursor-pointer"
-                >
-                  حفظ الطلب
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      <ManualRequestModal
+        isOpen={showManualModal}
+        onClose={() => setShowManualModal(false)}
+        onSubmit={handleCreateManualRequest}
+        manualName={manualName}
+        setManualName={setManualName}
+        manualPhone={manualPhone}
+        setManualPhone={setManualPhone}
+        manualEmail={manualEmail}
+        setManualEmail={setManualEmail}
+        manualType={manualType}
+        setManualType={setManualType}
+        manualPlatform={manualPlatform}
+        setManualPlatform={setManualPlatform}
+        manualDescription={manualDescription}
+        setManualDescription={setManualDescription}
+      />
 
       {/* ========================================== */}
       {/* MODAL: FILE PREVIEW (Google Drive) */}
       {/* ========================================== */}
-      {previewingFile && (
-        <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-4xl max-h-[90vh] bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex flex-col shadow-2xl">
-            <div className="flex items-center justify-between pb-3 border-b border-zinc-800 mb-3">
-              <div className="flex items-center gap-2">
-                <Eye className="w-4 h-4 text-emerald-400" />
-                <span className="text-xs font-bold text-white truncate max-w-md">{previewingFile.title}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <a
-                  href={previewingFile.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg flex items-center gap-1"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  <span>فتح في نافذة جديدة</span>
-                </a>
-                <button
-                  onClick={() => setPreviewingFile(null)}
-                  className="text-xs px-3 py-1 bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg cursor-pointer"
-                >
-                  إغلاق (✕)
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 overflow-auto flex items-center justify-center bg-black/60 rounded-xl p-2 min-h-[350px]">
-              <iframe
-                src={getGoogleDrivePreviewUrl(previewingFile.url)}
-                className="w-full h-[60vh] rounded-lg border-0"
-                title="معاينة الملف"
-              />
-            </div>
-          </div>
-        </div>
-      )}
+      <DrivePreviewModal
+        previewingFile={previewingFile}
+        onClose={() => setPreviewingFile(null)}
+      />
 
     </div>
   );

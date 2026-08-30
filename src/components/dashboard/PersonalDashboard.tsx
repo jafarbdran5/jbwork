@@ -1,69 +1,99 @@
 import React, { useState, useEffect } from 'react';
 import { useI18n } from '../../lib/i18n';
 import { useAuth } from '../../lib/auth';
+import { useTheme } from '../../lib/theme';
 import { db } from '../../lib/firebase';
-import { collection, query, where, orderBy, limit, onSnapshot, getDocs } from 'firebase/firestore';
-import { CaseItem, CaseReminder, CaseTask, CaseEvent, InternalRequest, CaseTypeConfig } from '../../types';
-import { DEFAULT_CASE_TYPES } from '../../lib/constants';
+import { collection, query, where, orderBy, limit, onSnapshot } from 'firebase/firestore';
+import { CaseItem, CaseReminder, CaseTask, CaseEvent, InternalRequest } from '../../types';
 import { getLocalCases } from '../../lib/offlineStore';
+import { getSavedPublicSheets } from '../../lib/googleSheetsReader';
 import { 
   ShieldCheck, 
   Layers, 
   AlertTriangle, 
   Clock, 
   CheckCircle2, 
-  TrendingUp, 
   FolderPlus, 
-  Calendar, 
   User, 
   ChevronRight, 
-  Bell, 
   Inbox, 
   Zap, 
   Activity,
-  Tag,
-  Briefcase,
-  Globe
+  Globe,
+  Plus,
+  Search,
+  Sparkles,
+  ArrowRight,
+  ArrowLeft,
+  FileSpreadsheet,
+  Settings,
+  Flame,
+  Shield,
+  Briefcase
 } from 'lucide-react';
 
 interface PersonalDashboardProps {
   onSelectCase: (caseId: string) => void;
   onOpenQuickCase: (type?: string) => void;
   onNavigate: (view: string) => void;
+  onOpenAiAssistant?: () => void;
 }
 
 export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({
   onSelectCase,
   onOpenQuickCase,
-  onNavigate
+  onNavigate,
+  onOpenAiAssistant
 }) => {
   const { t, isRTL } = useI18n();
-  const { userProfile, isSuperAdmin } = useAuth();
+  const { userProfile, isSuperAdmin, isAdmin } = useAuth();
+  const { isDark } = useTheme();
 
   const [cases, setCases] = useState<CaseItem[]>(() => getLocalCases().filter(c => !c.isDeleted && !(c as any)._deleted));
   const [reminders, setReminders] = useState<CaseReminder[]>([]);
   const [tasks, setTasks] = useState<CaseTask[]>([]);
-  const [requests, setRequests] = useState<InternalRequest[]>([]);
-  const [externalRequestsCount, setExternalRequestsCount] = useState<number>(0);
   const [recentEvents, setRecentEvents] = useState<CaseEvent[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+
+  // External Sheets metrics
+  const [externalStats, setExternalStats] = useState({
+    sheetsCount: 0,
+    totalRows: 0,
+    newRows: 0
+  });
 
   // Time based greeting
   const getGreeting = () => {
     const hour = new Date().getHours();
-    if (hour < 12) return t('goodMorning');
-    if (hour < 17) return t('goodAfternoon');
-    return t('goodEvening');
+    if (hour < 12) return isRTL ? 'صباح الخير' : 'Good morning';
+    if (hour < 17) return isRTL ? 'مساء الخير' : 'Good afternoon';
+    return isRTL ? 'مساء النور' : 'Good evening';
   };
 
-  const displayName = userProfile?.displayName?.split(' ')[0] || (isRTL ? 'جعفر' : 'Jaafar');
+  const displayName = userProfile?.displayName?.split(' ')[0] || (isRTL ? 'المشرف' : 'Supervisor');
 
-  // Load Dashboard Data & Listen to Deletion / Restore events
+  // Load Dashboard Data
   useEffect(() => {
     const syncLocal = () => {
       const local = getLocalCases().filter(c => !c.isDeleted && !(c as any)._deleted);
       if (local.length > 0) setCases(local);
+      
+      const sheets = getSavedPublicSheets();
+      let totalR = 0;
+      let newR = 0;
+      sheets.forEach(s => {
+        const rows = s.rows || [];
+        totalR += rows.length;
+        newR += rows.filter(r => !r._systemStatus || r._systemStatus === 'unlinked').length;
+      });
+      setExternalStats({
+        sheetsCount: sheets.length,
+        totalRows: totalR,
+        newRows: newR
+      });
     };
+
+    syncLocal();
 
     const handleDataChanged = () => {
       syncLocal();
@@ -99,22 +129,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({
       setReminders(items);
     }, (err) => console.warn(err));
 
-    const qTasks = query(collection(db, 'caseTasks'), where('status', '==', 'todo'));
-    const unsubTasks = onSnapshot(qTasks, (snap) => {
-      setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseTask)));
-    }, (err) => console.warn(err));
-
-    const qRequests = query(collection(db, 'requests'), where('status', '==', 'new'));
-    const unsubRequests = onSnapshot(qRequests, (snap) => {
-      setRequests(snap.docs.map(d => ({ id: d.id, ...d.data() } as InternalRequest)));
-    }, (err) => console.warn(err));
-
-    const qExternalRequests = query(collection(db, 'externalRequests'), where('status', '==', 'pending_review'));
-    const unsubExternalRequests = onSnapshot(qExternalRequests, (snap) => {
-      setExternalRequestsCount(snap.size);
-    }, (err) => console.warn(err));
-
-    const qEvents = query(collection(db, 'caseEvents'), orderBy('timestamp', 'desc'), limit(8));
+    const qEvents = query(collection(db, 'caseEvents'), orderBy('timestamp', 'desc'), limit(6));
     const unsubEvents = onSnapshot(qEvents, (snap) => {
       setRecentEvents(snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseEvent)));
     }, (err) => console.warn(err));
@@ -122,9 +137,6 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({
     return () => {
       unsubCases();
       unsubReminders();
-      unsubTasks();
-      unsubRequests();
-      unsubExternalRequests();
       unsubEvents();
       window.removeEventListener('jb_data_changed', handleDataChanged);
       window.removeEventListener('jb_entity_deleted', handleDataChanged);
@@ -132,445 +144,426 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({
     };
   }, []);
 
-  // Stats calculation
-  const totalCasesCount = cases.length;
-  const activeCasesCount = cases.filter(c => c.status === 'in_progress' || c.status === 'new').length;
-  const urgentCasesCount = cases.filter(c => c.priority === 'urgent' && c.status !== 'completed').length;
-  const pendingCasesCount = cases.filter(c => c.status === 'pending').length;
-  const completedCasesCount = cases.filter(c => c.status === 'completed').length;
-  const overdueTasksCount = tasks.filter(t => t.dueDate && t.dueDate < new Date().toISOString().split('T')[0]).length;
-
-  // Breakdown by platform
-  const platformCounts: Record<string, number> = {};
-  cases.forEach(c => {
-    const p = c.platform || (isRTL ? 'أخرى' : 'Other');
-    platformCounts[p] = (platformCounts[p] || 0) + 1;
-  });
-
-  // Breakdown by type
-  const typeCounts: Record<string, number> = {};
-  cases.forEach(c => {
-    const t = c.caseType || 'other';
-    typeCounts[t] = (typeCounts[t] || 0) + 1;
-  });
-
-  // Urgent cases list
+  // Cases breakdown
+  const openCasesCount = cases.filter(c => c.status === 'new').length;
+  const inProgressCasesCount = cases.filter(c => c.status === 'in_progress' || c.status === 'pending').length;
+  const closedCasesCount = cases.filter(c => c.status === 'completed' || c.status === 'closed' || c.status === 'resolved').length;
   const urgentCases = cases.filter(c => (c.priority === 'urgent' || c.priority === 'high') && c.status !== 'completed').slice(0, 5);
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-150">
+    <div className="space-y-4 sm:space-y-6 animate-in fade-in duration-150 pb-20">
       
-      {/* Top Greeting & Operations Banner */}
-      <div className="bg-[#18181B] border border-[#27272A] rounded-xl p-6 shadow-sm">
+      {/* Welcome & Supervisor Header */}
+      <div className={`border rounded-3xl p-5 sm:p-6 transition-colors shadow-sm ${
+        isDark ? 'bg-[#121824] border-slate-800' : 'bg-white border-slate-200 shadow-slate-100'
+      }`}>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2 mb-1.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-500" />
-              <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-indigo-400">
-                {t('commandCenter')}
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+              <span className={`text-xs font-bold uppercase tracking-wider ${isDark ? 'text-blue-400' : 'text-blue-600'}`}>
+                {isRTL ? 'لوحة التحكم والعمليات' : 'OPERATIONS DASHBOARD'}
+              </span>
+              <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium border ${
+                isDark 
+                  ? 'bg-slate-800 text-slate-300 border-slate-700' 
+                  : 'bg-slate-100 text-slate-700 border-slate-200'
+              }`}>
+                {userProfile?.role === 'super_admin' ? (isRTL ? 'المشرف الرئيسي' : 'Master Admin') : (isRTL ? 'مشرف' : 'Supervisor')}
               </span>
             </div>
-            <h1 className="text-2xl font-bold text-[#FAFAFA] tracking-tight">
+            <h1 className={`text-xl sm:text-2xl font-black tracking-tight ${isDark ? 'text-white' : 'text-slate-900'}`}>
               {getGreeting()}، {displayName}
             </h1>
-            <p className="text-xs sm:text-sm text-[#A1A1AA] mt-1 max-w-xl">
+            <p className={`text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
               {isRTL 
-                ? 'هنا نظرة سريعة على آخر التحديثات في نظام عملك اليوم والمهام والتذكيرات المستحقة.'
-                : 'Here is an overview of active cases, tasks, and follow-ups in your operations system today.'}
+                ? 'إدارة فورية ومتابعة شاملة للقضايا الداخلية والطلبات الخارجية الواردة.'
+                : 'Live tracking and management for internal cases and incoming external requests.'}
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5">
+          {/* Quick Primary Android Touch Actions */}
+          <div className="flex items-center gap-2.5 flex-wrap">
             <button
               onClick={() => onOpenQuickCase()}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-4 py-2 rounded-md shadow-sm transition-colors cursor-pointer flex items-center gap-2"
+              className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white text-xs font-bold px-4 py-3 rounded-2xl shadow-md shadow-blue-600/20 transition-all cursor-pointer min-h-[46px]"
             >
-              <Zap className="w-3.5 h-3.5" />
-              <span>+{t('newCase')}</span>
+              <Plus className="w-4 h-4" />
+              <span>{isRTL ? '+ قضية جديدة' : '+ New Case'}</span>
+            </button>
+
+            <button
+              onClick={() => onNavigate('external_requests')}
+              className={`flex-1 sm:flex-none flex items-center justify-center gap-2 border text-xs font-semibold px-4 py-3 rounded-2xl transition-all cursor-pointer min-h-[46px] active:scale-[0.98] ${
+                isDark 
+                  ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700' 
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300 shadow-sm'
+              }`}
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-500" />
+              <span>{isRTL ? 'الطلبات الخارجية' : 'External Requests'}</span>
+            </button>
+
+            {onOpenAiAssistant && (
+              <button
+                onClick={onOpenAiAssistant}
+                className={`flex items-center justify-center gap-1.5 border text-xs font-bold px-3.5 py-3 rounded-2xl transition-all cursor-pointer min-h-[46px] ${
+                  isDark 
+                    ? 'bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border-indigo-500/40' 
+                    : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200'
+                }`}
+                title={isRTL ? 'المساعد الذكي' : 'AI Assistant'}
+              >
+                <Sparkles className="w-4 h-4 text-indigo-500" />
+                <span className="hidden sm:inline">{isRTL ? 'المساعد الذكي' : 'AI'}</span>
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* CORE DIVISION: 2 Distinct Pillars (External Requests vs Internal Cases) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        
+        {/* PILLAR 1: External Requests (Google Forms & Sheets) */}
+        <div 
+          onClick={() => onNavigate('external_requests')}
+          className={`border-2 rounded-3xl p-5 shadow-sm transition-all cursor-pointer group flex flex-col justify-between relative overflow-hidden ${
+            isDark 
+              ? 'bg-[#121824] border-emerald-500/30 hover:border-emerald-500/60 hover:shadow-emerald-950/20' 
+              : 'bg-white border-emerald-300 hover:border-emerald-500 hover:shadow-md hover:shadow-emerald-100'
+          }`}
+        >
+          <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-emerald-500 to-teal-400" />
+          
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2.5">
+                <div className={`w-10 h-10 rounded-2xl border flex items-center justify-center ${
+                  isDark 
+                    ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400' 
+                    : 'bg-emerald-50 border-emerald-200 text-emerald-600'
+                }`}>
+                  <FileSpreadsheet className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className={`text-base font-bold flex items-center gap-2 ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                    {isRTL ? '1. الطلبات الخارجية' : '1. External Requests'}
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                      isDark 
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' 
+                        : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    }`}>
+                      Google Sheets
+                    </span>
+                  </h2>
+                  <p className={`text-[11px] ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                    {isRTL ? 'الطلبات الواردة من النماذج وموقع الويب' : 'Incoming website & form submissions'}
+                  </p>
+                </div>
+              </div>
+
+              {isRTL ? (
+                <ArrowLeft className={`w-5 h-5 group-hover:-translate-x-1 transition-transform ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`} />
+              ) : (
+                <ArrowRight className={`w-5 h-5 group-hover:translate-x-1 transition-transform ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`} />
+              )}
+            </div>
+
+            {/* 3 Status Counters for External Requests */}
+            <div className="grid grid-cols-3 gap-2 my-4">
+              <div className={`border rounded-2xl p-3 text-center transition-colors ${
+                isDark ? 'bg-[#0B0F17] border-slate-800' : 'bg-slate-50 border-slate-200'
+              }`}>
+                <span className={`text-[10px] font-semibold block mb-0.5 ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`}>
+                  {isRTL ? 'طلبات جديدة' : 'New'}
+                </span>
+                <span className={`text-lg font-black font-mono ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                  {externalStats.newRows}
+                </span>
+              </div>
+
+              <div className={`border rounded-2xl p-3 text-center transition-colors ${
+                isDark ? 'bg-[#0B0F17] border-slate-800' : 'bg-slate-50 border-slate-200'
+              }`}>
+                <span className={`text-[10px] font-semibold block mb-0.5 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                  {isRTL ? 'الملفات المربوطة' : 'Sheets'}
+                </span>
+                <span className={`text-lg font-black font-mono ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                  {externalStats.sheetsCount}
+                </span>
+              </div>
+
+              <div className={`border rounded-2xl p-3 text-center transition-colors ${
+                isDark ? 'bg-[#0B0F17] border-slate-800' : 'bg-slate-50 border-slate-200'
+              }`}>
+                <span className={`text-[10px] font-semibold block mb-0.5 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                  {isRTL ? 'إجمالي السجلات' : 'Total'}
+                </span>
+                <span className={`text-lg font-black font-mono ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                  {externalStats.totalRows}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className={`pt-2.5 border-t flex items-center justify-between text-xs font-semibold ${
+            isDark ? 'border-slate-800/80 text-emerald-400' : 'border-slate-100 text-emerald-600'
+          }`}>
+            <span>{isRTL ? 'استعراض وتحويل الطلبات إلى قضايا' : 'Review & Convert to Cases'}</span>
+            <span className={`text-[11px] font-normal ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+              {isRTL ? 'اختيار الورقة بالاسم بدون GID' : 'Select by tab name'}
+            </span>
+          </div>
+        </div>
+
+        {/* PILLAR 2: Internal Cases (System Case Management) */}
+        <div 
+          onClick={() => onNavigate('cases')}
+          className={`border-2 rounded-3xl p-5 shadow-sm transition-all cursor-pointer group flex flex-col justify-between relative overflow-hidden ${
+            isDark 
+              ? 'bg-[#121824] border-blue-500/30 hover:border-blue-500/60 hover:shadow-blue-950/20' 
+              : 'bg-white border-blue-300 hover:border-blue-500 hover:shadow-md hover:shadow-blue-100'
+          }`}
+        >
+          <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-blue-500 to-indigo-500" />
+          
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2.5">
+                <div className={`w-10 h-10 rounded-2xl border flex items-center justify-center ${
+                  isDark 
+                    ? 'bg-blue-500/20 border-blue-500/40 text-blue-400' 
+                    : 'bg-blue-50 border-blue-200 text-blue-600'
+                }`}>
+                  <Layers className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className={`text-base font-bold flex items-center gap-2 ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                    {isRTL ? '2. القضايا الداخلية' : '2. Internal Cases'}
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                      isDark 
+                        ? 'bg-blue-500/20 text-blue-300 border-blue-500/30' 
+                        : 'bg-blue-50 text-blue-700 border-blue-200'
+                    }`}>
+                      قاعدة المنظومة
+                    </span>
+                  </h2>
+                  <p className={`text-[11px] ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                    {isRTL ? 'ملفات العمل، المتابعة، والتوثيق المعتمدة' : 'Official active cases, timeline & files'}
+                  </p>
+                </div>
+              </div>
+
+              {isRTL ? (
+                <ArrowLeft className={`w-5 h-5 group-hover:-translate-x-1 transition-transform ${isDark ? 'text-blue-400' : 'text-blue-600'}`} />
+              ) : (
+                <ArrowRight className={`w-5 h-5 group-hover:translate-x-1 transition-transform ${isDark ? 'text-blue-400' : 'text-blue-600'}`} />
+              )}
+            </div>
+
+            {/* 3 Status Counters for Internal Cases */}
+            <div className="grid grid-cols-3 gap-2 my-4">
+              <div className={`border rounded-2xl p-3 text-center transition-colors ${
+                isDark ? 'bg-[#0B0F17] border-slate-800' : 'bg-slate-50 border-slate-200'
+              }`}>
+                <span className={`text-[10px] font-semibold block mb-0.5 ${isDark ? 'text-blue-400' : 'text-blue-600'}`}>
+                  {isRTL ? 'قضايا مفتوحة' : 'Open'}
+                </span>
+                <span className={`text-lg font-black font-mono ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                  {openCasesCount}
+                </span>
+              </div>
+
+              <div className={`border rounded-2xl p-3 text-center transition-colors ${
+                isDark ? 'bg-[#0B0F17] border-slate-800' : 'bg-slate-50 border-slate-200'
+              }`}>
+                <span className={`text-[10px] font-semibold block mb-0.5 ${isDark ? 'text-amber-400' : 'text-amber-600'}`}>
+                  {isRTL ? 'قيد المتابعة' : 'In Progress'}
+                </span>
+                <span className={`text-lg font-black font-mono ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                  {inProgressCasesCount}
+                </span>
+              </div>
+
+              <div className={`border rounded-2xl p-3 text-center transition-colors ${
+                isDark ? 'bg-[#0B0F17] border-slate-800' : 'bg-slate-50 border-slate-200'
+              }`}>
+                <span className={`text-[10px] font-semibold block mb-0.5 ${isDark ? 'text-emerald-400' : 'text-emerald-600'}`}>
+                  {isRTL ? 'المكتملة' : 'Closed'}
+                </span>
+                <span className={`text-lg font-black font-mono ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                  {closedCasesCount}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className={`pt-2.5 border-t flex items-center justify-between text-xs font-semibold ${
+            isDark ? 'border-slate-800/80 text-blue-400' : 'border-slate-100 text-blue-600'
+          }`}>
+            <span>{isRTL ? 'إجمالي القضايا:' : 'Total Cases:'} {cases.length}</span>
+            <span className={`text-[11px] font-normal ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+              {isRTL ? 'بحث، تعديل، وإجراءات' : 'Search, edit, workflow'}
+            </span>
+          </div>
+        </div>
+
+      </div>
+
+      {/* Urgent Attention & Today's Schedule */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        
+        {/* Urgent Cases List (2 Cols) */}
+        <div className={`lg:col-span-2 border rounded-3xl p-5 flex flex-col shadow-sm transition-colors ${
+          isDark ? 'bg-[#121824] border-slate-800' : 'bg-white border-slate-200 shadow-slate-100'
+        }`}>
+          <div className={`flex items-center justify-between pb-3 border-b mb-3 ${
+            isDark ? 'border-slate-800' : 'border-slate-100'
+          }`}>
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-500" />
+              <h3 className={`text-sm font-bold ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                {isRTL ? 'قضايا عاجلة بحاجة لمتابعة' : 'Urgent Cases Requiring Action'}
+              </h3>
+            </div>
+            <button 
+              onClick={() => onNavigate('cases')}
+              className={`text-xs font-semibold cursor-pointer transition-colors ${
+                isDark ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-700'
+              }`}
+            >
+              {isRTL ? 'عرض كل القضايا' : 'View All'}
+            </button>
+          </div>
+
+          {urgentCases.length === 0 ? (
+            <div className={`py-8 text-center text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+              <CheckCircle2 className="w-8 h-8 text-emerald-500 mx-auto mb-2 opacity-80" />
+              <p>{isRTL ? 'ممتاز! لا توجد أي قضايا عاجلة متأخرة حالياً.' : 'No urgent cases requiring immediate intervention.'}</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {urgentCases.map((c) => (
+                <div
+                  key={c.id}
+                  onClick={() => onSelectCase(c.id)}
+                  className={`p-3 border rounded-2xl transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                    isDark 
+                      ? 'bg-[#0B0F17] hover:bg-[#182132] border-slate-800 hover:border-slate-700' 
+                      : 'bg-slate-50 hover:bg-slate-100/80 border-slate-200 hover:border-slate-300 shadow-sm'
+                  }`}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className={`font-mono text-xs font-bold px-2 py-1 rounded-lg border shrink-0 ${
+                      isDark 
+                        ? 'text-blue-400 bg-blue-950/60 border-blue-800/40' 
+                        : 'text-blue-700 bg-blue-50 border-blue-200'
+                    }`}>
+                      {c.caseNumber}
+                    </span>
+                    <div className="min-w-0">
+                      <p className={`text-xs font-bold truncate ${isDark ? 'text-white' : 'text-slate-900'}`}>{c.title}</p>
+                      <p className={`text-[10px] truncate ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+                        {c.client?.name || 'صاحب البلاغ'} • {c.platform || 'عام'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border shrink-0 ${
+                    isDark 
+                      ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' 
+                      : 'bg-rose-50 text-rose-700 border-rose-200'
+                  }`}>
+                    {c.priority === 'urgent' ? (isRTL ? 'عاجل جداً' : 'Urgent') : (isRTL ? 'أولوية عالية' : 'High')}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Today's Follow-ups & Reminders (1 Col) */}
+        <div className={`border rounded-3xl p-5 flex flex-col shadow-sm transition-colors ${
+          isDark ? 'bg-[#121824] border-slate-800' : 'bg-white border-slate-200 shadow-slate-100'
+        }`}>
+          <div className={`flex items-center justify-between pb-3 border-b mb-3 ${
+            isDark ? 'border-slate-800' : 'border-slate-100'
+          }`}>
+            <div className="flex items-center gap-2">
+              <Clock className="w-4 h-4 text-amber-500" />
+              <h3 className={`text-sm font-bold ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                {isRTL ? 'مواعيد متابعة اليوم' : "Today's Reminders"}
+              </h3>
+            </div>
+            <button 
+              onClick={() => onNavigate('reminders')}
+              className={`text-xs font-semibold cursor-pointer transition-colors ${
+                isDark ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-700'
+              }`}
+            >
+              {isRTL ? 'الكل' : 'All'}
+            </button>
+          </div>
+
+          {reminders.length === 0 ? (
+            <div className={`py-8 text-center text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>
+              <Clock className={`w-7 h-7 mx-auto mb-2 opacity-50 ${isDark ? 'text-slate-600' : 'text-slate-400'}`} />
+              <p>{isRTL ? 'لا توجد مواعيد متابعة مجدولة لليوم.' : 'No follow-up reminders due today.'}</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {reminders.map((rem) => (
+                <div 
+                  key={rem.id} 
+                  className={`p-2.5 border rounded-2xl text-xs space-y-1 ${
+                    isDark ? 'bg-[#0B0F17] border-slate-800' : 'bg-slate-50 border-slate-200 shadow-sm'
+                  }`}
+                >
+                  <div className="flex items-center justify-between text-[10px] text-amber-500 font-semibold">
+                    <span>{rem.caseNumber || 'تذكير'}</span>
+                    <span>{rem.dueTime || '10:00 AM'}</span>
+                  </div>
+                  <p className={`font-medium truncate ${isDark ? 'text-white' : 'text-slate-900'}`}>{rem.title}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Supervisor Quick Links */}
+          <div className={`mt-auto pt-4 border-t space-y-2 ${isDark ? 'border-slate-800/80' : 'border-slate-100'}`}>
+            <button
+              onClick={() => onNavigate('search')}
+              className={`w-full flex items-center justify-between p-2.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
+                isDark 
+                  ? 'bg-[#0B0F17] hover:bg-slate-800 text-slate-300 hover:text-white' 
+                  : 'bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-slate-900 border border-slate-200 shadow-sm'
+              }`}
+            >
+              <span className="flex items-center gap-2">
+                <Search className="w-3.5 h-3.5 text-blue-500" />
+                {isRTL ? 'البحث الشامل والمتقدم' : 'Global Search'}
+              </span>
+              <ChevronRight className={`w-3.5 h-3.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`} />
             </button>
 
             {isSuperAdmin && (
               <button
-                onClick={() => onNavigate('jaafar_workspace')}
-                className="bg-[#09090B] hover:bg-[#27272A] text-[#FAFAFA] border border-[#27272A] text-xs font-medium px-3.5 py-2 rounded-md transition-colors cursor-pointer flex items-center gap-2"
+                onClick={() => onNavigate('team')}
+                className={`w-full flex items-center justify-between p-2.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
+                  isDark 
+                    ? 'bg-[#0B0F17] hover:bg-slate-800 text-slate-300 hover:text-white' 
+                    : 'bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-slate-900 border border-slate-200 shadow-sm'
+                }`}
               >
-                <Briefcase className="w-3.5 h-3.5 text-indigo-400" />
-                <span>{t('navJaafarWorkspace')}</span>
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* 8 Metric KPI Cards Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        
-        {/* Total Cases */}
-        <div 
-          onClick={() => onNavigate('cases')}
-          className="bg-[#18181B] border border-[#27272A] hover:border-zinc-700 p-4 rounded-xl transition-colors cursor-pointer group"
-        >
-          <div className="text-[#71717A] text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center justify-between">
-            <span>{t('totalCases')}</span>
-            <Layers className="w-3.5 h-3.5 text-indigo-400" />
-          </div>
-          <div className="text-2xl font-bold text-[#FAFAFA] font-mono">{totalCasesCount}</div>
-          <div className="text-[10px] text-emerald-400 mt-1 flex items-center gap-1">
-            <span>↑ 12%</span>
-            <span className="text-[#71717A]">{isRTL ? 'إجمالي القضايا المسجلة' : 'All recorded cases'}</span>
-          </div>
-        </div>
-
-        {/* Active Cases */}
-        <div 
-          onClick={() => onNavigate('cases')}
-          className="bg-[#18181B] border border-[#27272A] hover:border-zinc-700 p-4 rounded-xl transition-colors cursor-pointer group"
-        >
-          <div className="text-[#71717A] text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center justify-between">
-            <span>{t('activeCases')}</span>
-            <Activity className="w-3.5 h-3.5 text-blue-400" />
-          </div>
-          <div className="text-2xl font-bold text-blue-400 font-mono">{activeCasesCount}</div>
-          <div className="text-[10px] text-[#71717A] mt-1">
-            {isRTL ? 'قيد العمل والمتابعة' : 'In progress'}
-          </div>
-        </div>
-
-        {/* Urgent Cases */}
-        <div 
-          onClick={() => onNavigate('cases')}
-          className="bg-[#18181B] border border-[#27272A] hover:border-zinc-700 p-4 rounded-xl transition-colors cursor-pointer group"
-        >
-          <div className="text-[#71717A] text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center justify-between">
-            <span>{t('urgentCases')}</span>
-            <AlertTriangle className="w-3.5 h-3.5 text-red-500" />
-          </div>
-          <div className="text-2xl font-bold text-red-500 font-mono">{urgentCasesCount}</div>
-          <div className="text-[10px] text-[#71717A] mt-1">
-            {isRTL ? 'تحتاج إلى تدخل فوري' : 'Needs immediate action'}
-          </div>
-        </div>
-
-        {/* Today's Reminders */}
-        <div 
-          onClick={() => onNavigate('reminders')}
-          className="bg-[#18181B] border border-[#27272A] hover:border-zinc-700 p-4 rounded-xl transition-colors cursor-pointer group"
-        >
-          <div className="text-[#71717A] text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center justify-between">
-            <span>{t('todayReminders')}</span>
-            <Clock className="w-3.5 h-3.5 text-orange-400" />
-          </div>
-          <div className="text-2xl font-bold text-[#FAFAFA] font-mono">{reminders.length}</div>
-          <div className="text-[10px] text-[#71717A] mt-1">
-            {isRTL ? 'مواعيد متابعة اليوم' : 'Due today'}
-          </div>
-        </div>
-
-        {/* Pending Cases */}
-        <div 
-          onClick={() => onNavigate('cases')}
-          className="bg-[#18181B] border border-[#27272A] hover:border-zinc-700 p-4 rounded-xl transition-colors cursor-pointer group"
-        >
-          <div className="text-[#71717A] text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center justify-between">
-            <span>{t('pendingCases')}</span>
-            <Clock className="w-3.5 h-3.5 text-amber-400" />
-          </div>
-          <div className="text-2xl font-bold text-amber-400 font-mono">{pendingCasesCount}</div>
-          <div className="text-[10px] text-[#71717A] mt-1">
-            {isRTL ? 'بانتظار رد المنصة' : 'Awaiting platform'}
-          </div>
-        </div>
-
-        {/* Overdue Tasks */}
-        <div 
-          onClick={() => onNavigate('tasks')}
-          className="bg-[#18181B] border border-[#27272A] hover:border-zinc-700 p-4 rounded-xl transition-colors cursor-pointer group"
-        >
-          <div className="text-[#71717A] text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center justify-between">
-            <span>{t('overdueTasks')}</span>
-            <AlertTriangle className="w-3.5 h-3.5 text-yellow-400" />
-          </div>
-          <div className="text-2xl font-bold text-yellow-400 font-mono">{overdueTasksCount}</div>
-          <div className="text-[10px] text-[#71717A] mt-1">
-            {isRTL ? 'تجاوزت تاريخ الاستحقاق' : 'Past due'}
-          </div>
-        </div>
-
-        {/* Completed Cases */}
-        <div 
-          onClick={() => onNavigate('cases')}
-          className="bg-[#18181B] border border-[#27272A] hover:border-zinc-700 p-4 rounded-xl transition-colors cursor-pointer group"
-        >
-          <div className="text-[#71717A] text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center justify-between">
-            <span>{t('completedCases')}</span>
-            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-          </div>
-          <div className="text-2xl font-bold text-emerald-400 font-mono">{completedCasesCount}</div>
-          <div className="text-[10px] text-emerald-400/80 mt-1">
-            {isRTL ? 'أُغلقت بنجاح' : 'Closed successfully'}
-          </div>
-        </div>
-
-        {/* New Internal Requests */}
-        <div 
-          onClick={() => onNavigate('requests')}
-          className="bg-[#18181B] border border-[#27272A] hover:border-zinc-700 p-4 rounded-xl transition-colors cursor-pointer group"
-        >
-          <div className="text-[#71717A] text-[10px] font-bold uppercase tracking-wider mb-1 flex items-center justify-between">
-            <span>{t('newRequests')}</span>
-            <Inbox className="w-3.5 h-3.5 text-indigo-400" />
-          </div>
-          <div className="text-2xl font-bold text-indigo-400 font-mono">{requests.length}</div>
-          <div className="text-[10px] text-amber-400 mt-1">
-            {isRTL ? 'طلبات داخلية بانتظار المراجعة' : 'Internal pending'}
-          </div>
-        </div>
-
-        {/* Google External Requests */}
-        <div 
-          onClick={() => onNavigate('external_requests')}
-          className="bg-[#18181B] border border-indigo-500/20 hover:border-indigo-500/50 p-4 rounded-xl transition-colors cursor-pointer group col-span-2 sm:col-span-4 flex items-center justify-between"
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-indigo-600/10 text-indigo-400 flex items-center justify-center font-bold">
-              <Globe className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-white">
-                  {isRTL ? 'الطلبات الخارجية (Google Forms & Sheets)' : 'External Google Requests'}
+                <span className="flex items-center gap-2">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+                  {isRTL ? 'إدارة المشرفين والصلاحيات' : 'Admin & Permissions'}
                 </span>
-                {externalRequestsCount > 0 && (
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse">
-                    {externalRequestsCount} {isRTL ? 'جديد بانتظار المراجعة' : 'New pending'}
-                  </span>
-                )}
-              </div>
-              <p className="text-[11px] text-zinc-400 mt-0.5">
-                {isRTL 
-                  ? 'مزامنة حية من Google Form وGoogle Sheet الموقع وتحويلها إلى قضايا رسمية'
-                  : 'Live sync from Google Forms and Website Sheets with 1-click Case Conversion'}
-              </p>
-            </div>
-          </div>
-
-          <button className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition-colors">
-            {isRTL ? 'فتح لوحة الطلبات' : 'Open Requests'}
-          </button>
-        </div>
-
-      </div>
-
-      {/* Main Section: Operations Grid & Tables */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        {/* Cases Table & Attention (2 Cols) */}
-        <div className="lg:col-span-2 space-y-6">
-          
-          {/* Section: Urgent Cases Table */}
-          <div className="bg-[#18181B] border border-[#27272A] rounded-xl flex flex-col overflow-hidden">
-            <div className="p-4 border-b border-[#27272A] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-red-400" />
-                <h2 className="text-sm font-bold text-[#FAFAFA]">
-                  {isRTL ? 'آخر القضايا العاجلة المفتوحة' : 'Urgent Active Cases'}
-                </h2>
-              </div>
-              <button 
-                onClick={() => onNavigate('cases')}
-                className="text-xs text-indigo-400 hover:underline font-medium"
-              >
-                {isRTL ? 'عرض الكل' : 'View All'}
+                <ChevronRight className={`w-3.5 h-3.5 ${isDark ? 'text-slate-500' : 'text-slate-400'}`} />
               </button>
-            </div>
-
-            {urgentCases.length === 0 ? (
-              <div className="p-8 text-center text-xs text-[#71717A]">
-                <CheckCircle2 className="w-7 h-7 text-emerald-500/80 mx-auto mb-2" />
-                <p>{isRTL ? 'لا توجد قضايا عاجلة حالياً.' : 'No urgent or critical cases right now.'}</p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className={`w-full ${isRTL ? 'text-right' : 'text-left'}`}>
-                  <thead className="bg-[#09090B]/60 border-b border-[#27272A]">
-                    <tr className="text-[10px] text-[#71717A] uppercase tracking-wider">
-                      <th className="p-3.5 font-semibold">{isRTL ? 'رقم القضية' : 'Case #'}</th>
-                      <th className="p-3.5 font-semibold">{isRTL ? 'العنوان والنوع' : 'Title & Type'}</th>
-                      <th className="p-3.5 font-semibold">{isRTL ? 'المنصة' : 'Platform'}</th>
-                      <th className="p-3.5 font-semibold">{isRTL ? 'الأولوية / الحالة' : 'Priority / Status'}</th>
-                      <th className="p-3.5 font-semibold">{isRTL ? 'الموظف' : 'Assignee'}</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-xs divide-y divide-[#27272A]">
-                    {urgentCases.map((c) => (
-                      <tr 
-                        key={c.id}
-                        onClick={() => onSelectCase(c.id)}
-                        className="hover:bg-[#27272A]/30 transition-colors cursor-pointer"
-                      >
-                        <td className="p-3.5 font-mono text-indigo-400 font-semibold whitespace-nowrap">
-                          {c.caseNumber}
-                        </td>
-                        <td className="p-3.5">
-                          <div className="font-medium text-[#FAFAFA] truncate max-w-xs">{c.title}</div>
-                          <div className="text-[10px] text-[#71717A]">{c.caseType}</div>
-                        </td>
-                        <td className="p-3.5 text-[#A1A1AA] whitespace-nowrap">
-                          {c.platform || '-'}
-                        </td>
-                        <td className="p-3.5 whitespace-nowrap">
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] border font-medium ${
-                            c.priority === 'urgent' 
-                              ? 'bg-red-500/10 text-red-400 border-red-500/20'
-                              : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                          }`}>
-                            {t(`priority_${c.priority}`)}
-                          </span>
-                        </td>
-                        <td className="p-3.5 text-[#A1A1AA] font-medium whitespace-nowrap">
-                          {c.assignedTo?.name || (isRTL ? 'غير معين' : 'Unassigned')}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
             )}
           </div>
-
-          {/* Section: Platform Breakdown Distribution */}
-          <div className="bg-[#18181B] border border-[#27272A] rounded-xl p-5 shadow-sm space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-[#27272A]">
-              <div className="flex items-center gap-2">
-                <TrendingUp className="w-4 h-4 text-indigo-400" />
-                <h3 className="text-sm font-bold text-[#FAFAFA]">
-                  {isRTL ? 'توزيع القضايا حسب المنصة الرقمية' : 'Cases Distribution by Platform'}
-                </h3>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {Object.entries(platformCounts).slice(0, 8).map(([platform, count]) => (
-                <div key={platform} className="bg-[#09090B] p-3 rounded-lg border border-[#27272A]">
-                  <span className="text-[11px] font-semibold text-[#A1A1AA] block truncate">{platform}</span>
-                  <div className="flex items-baseline justify-between mt-1">
-                    <span className="text-lg font-bold text-[#FAFAFA] font-mono">{count}</span>
-                    <span className="text-[10px] text-[#71717A] font-mono">
-                      {totalCasesCount > 0 ? `${Math.round((count / totalCasesCount) * 100)}%` : '0%'}
-                    </span>
-                  </div>
-                  <div className="w-full bg-[#18181B] h-1 rounded-full mt-2 overflow-hidden">
-                    <div 
-                      className="bg-indigo-500 h-full rounded-full" 
-                      style={{ width: `${totalCasesCount > 0 ? (count / totalCasesCount) * 100 : 0}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-        </div>
-
-        {/* Right Column: Today's Reminders & Live Activity */}
-        <div className="space-y-6">
-          
-          {/* Today's Reminders Panel */}
-          <div className="bg-[#18181B] border border-[#27272A] rounded-xl p-4 flex flex-col">
-            <div className="pb-3 border-b border-[#27272A] flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <Clock className="w-4 h-4 text-indigo-400" />
-                <h3 className="text-sm font-bold text-[#FAFAFA]">
-                  {t('todayReminders')}
-                </h3>
-              </div>
-              <button 
-                onClick={() => onNavigate('reminders')}
-                className="text-xs text-indigo-400 hover:underline font-medium"
-              >
-                {isRTL ? 'المزيد' : 'More'}
-              </button>
-            </div>
-
-            {reminders.length === 0 ? (
-              <p className="text-xs text-[#71717A] py-6 text-center">{t('noRemindersToday')}</p>
-            ) : (
-              <div className="space-y-3">
-                {reminders.map((rem, idx) => (
-                  <div key={rem.id} className="flex gap-3 items-start">
-                    <div className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${
-                      idx === 0 ? 'bg-red-500' : 'bg-indigo-500'
-                    }`} />
-                    <div className="flex flex-col min-w-0 flex-1">
-                      <span className="text-xs font-semibold text-[#FAFAFA]">{rem.title}</span>
-                      <span className="text-[10px] text-[#71717A] font-mono">
-                        {rem.caseNumber ? `${rem.caseNumber} • ` : ''}{rem.dueTime || '10:00 AM'}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="mt-4 pt-4 border-t border-[#27272A]">
-              <h4 className="text-[10px] font-bold text-[#71717A] uppercase mb-2">
-                {isRTL ? 'حالة النظام' : 'SYSTEM STATUS'}
-              </h4>
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-[10px]">
-                  <span className="flex items-center gap-2 text-[#A1A1AA]">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    {isRTL ? 'متصل بالإنترنت' : 'Connected to Network'}
-                  </span>
-                  <span className="text-[#71717A]">{isRTL ? 'الآن' : 'Live'}</span>
-                </div>
-                <div className="flex items-center justify-between text-[10px]">
-                  <span className="flex items-center gap-2 text-[#A1A1AA]">
-                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
-                    {isRTL ? 'تمت المزامنة الآمنة' : 'Cloud Sync Active'}
-                  </span>
-                  <span className="text-[#71717A]">{isRTL ? 'نشط' : 'Active'}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Live Recent Activity Stream */}
-          <div className="bg-[#18181B] border border-[#27272A] rounded-xl p-4 flex flex-col">
-            <div className="pb-3 border-b border-[#27272A] flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <Activity className="w-4 h-4 text-indigo-400" />
-                <h3 className="text-sm font-bold text-[#FAFAFA]">
-                  {isRTL ? 'سجل العمليات الأخير' : 'Recent Operations'}
-                </h3>
-              </div>
-              <button 
-                onClick={() => onNavigate('activity_log')}
-                className="text-xs text-[#71717A] hover:text-[#FAFAFA] transition-colors"
-              >
-                {t('navActivityLog')}
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              {recentEvents.length === 0 ? (
-                <p className="text-xs text-[#71717A] py-4 text-center">{isRTL ? 'لا توجد أنشطة مسجلة' : 'No activity logs yet'}</p>
-              ) : (
-                recentEvents.slice(0, 5).map((ev) => (
-                  <div key={ev.id} className="text-xs space-y-0.5 pb-2.5 border-b border-[#27272A]/60 last:border-0 last:pb-0">
-                    <div className="flex items-center justify-between text-[10px]">
-                      <span className="font-bold text-indigo-400">{ev.performedBy?.name}</span>
-                      <span className="text-[#71717A] font-mono">
-                        {ev.timestamp?.toDate ? ev.timestamp.toDate().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) : ''}
-                      </span>
-                    </div>
-                    <p className="text-[#E4E4E7] font-medium truncate">{ev.title}</p>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-
         </div>
 
       </div>
@@ -578,3 +571,4 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({
     </div>
   );
 };
+

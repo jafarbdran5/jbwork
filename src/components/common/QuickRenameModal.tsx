@@ -21,6 +21,7 @@ import {
 } from '../../lib/dynamicLabelsStore';
 import { useAuth } from '../../lib/auth';
 import { hasPermission } from '../../lib/permissionGuard';
+import { useModalLifecycle } from '../../hooks/useModalLifecycle';
 
 interface QuickRenameModalProps {
   isOpen: boolean;
@@ -46,6 +47,13 @@ export const QuickRenameModal: React.FC<QuickRenameModalProps> = ({
   const [remoteGoogleRename, setRemoteGoogleRename] = useState(false);
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
+
+  const { handleSafeClose, handleBackdropClick } = useModalLifecycle({
+    isOpen,
+    onClose,
+    id: 'quick-rename-modal',
+    isSubmitting: loading,
+  });
 
   useEffect(() => {
     if (isOpen && labelId) {
@@ -90,7 +98,7 @@ export const QuickRenameModal: React.FC<QuickRenameModalProps> = ({
             setFeedback({ type: 'success', text: res.message });
             if (onSuccess) onSuccess(newLabelAr.trim());
             setTimeout(() => {
-              onClose();
+              handleSafeClose();
             }, 1200);
             return;
           } else {
@@ -112,7 +120,7 @@ export const QuickRenameModal: React.FC<QuickRenameModalProps> = ({
         setFeedback({ type: 'success', text: res.message });
         if (onSuccess) onSuccess(newLabelAr.trim());
         setTimeout(() => {
-          onClose();
+          handleSafeClose();
         }, 800);
       } else {
         setFeedback({ type: 'error', text: res.message });
@@ -134,7 +142,7 @@ export const QuickRenameModal: React.FC<QuickRenameModalProps> = ({
       }
       if (onSuccess && item) onSuccess(item.defaultLabelAr);
       setTimeout(() => {
-        onClose();
+        handleSafeClose();
       }, 800);
     } else {
       setFeedback({ type: 'error', text: res.message });
@@ -144,8 +152,17 @@ export const QuickRenameModal: React.FC<QuickRenameModalProps> = ({
   const isGoogleSheet = item?.category === 'google_sheets';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in" dir="rtl">
-      <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden text-white flex flex-col">
+    <div 
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200" 
+      onClick={handleBackdropClick}
+      dir="rtl"
+    >
+      <div 
+        onClick={(e) => e.stopPropagation()}
+        className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden text-white flex flex-col animate-in zoom-in-95 duration-150"
+      >
         {/* Header */}
         <div className="p-5 border-b border-slate-800 bg-slate-950/60 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -165,8 +182,9 @@ export const QuickRenameModal: React.FC<QuickRenameModalProps> = ({
             </div>
           </div>
           <button 
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
+            type="button"
+            onClick={handleSafeClose}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>

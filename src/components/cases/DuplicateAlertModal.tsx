@@ -17,6 +17,7 @@ import {
 import { CaseItem, UserProfile } from '../../types';
 import { DuplicateMatchResult } from '../../lib/duplicateDetector';
 import { mergeDataIntoExistingCase, MergeInputData } from '../../lib/caseMergeService';
+import { useModalLifecycle } from '../../hooks/useModalLifecycle';
 
 interface DuplicateAlertModalProps {
   isOpen: boolean;
@@ -41,6 +42,13 @@ export const DuplicateAlertModal: React.FC<DuplicateAlertModalProps> = ({
 }) => {
   const [isMerging, setIsMerging] = useState(false);
   const [mergeStatus, setMergeStatus] = useState<string | null>(null);
+
+  const { handleSafeClose, handleBackdropClick } = useModalLifecycle({
+    isOpen: isOpen && Boolean(duplicateResult.matchedCase),
+    onClose,
+    id: 'duplicate-alert-modal',
+    isSubmitting: isMerging,
+  });
 
   if (!isOpen || !duplicateResult.matchedCase) return null;
 
@@ -90,9 +98,15 @@ export const DuplicateAlertModal: React.FC<DuplicateAlertModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
+    <div 
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-5 overflow-y-auto animate-in fade-in duration-200"
+      onClick={handleBackdropClick}
+    >
       <div 
-        className="w-full max-w-xl bg-slate-900 border-2 border-amber-500/50 rounded-2xl shadow-2xl p-6 space-y-5 text-white animate-in zoom-in-95 duration-150"
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-xl max-h-[88vh] overflow-y-auto my-auto bg-slate-900 border-2 border-amber-500/50 rounded-2xl shadow-2xl p-5 sm:p-6 space-y-5 text-white animate-in zoom-in-95 duration-150"
         dir="rtl"
       >
         {/* Top Warning Header */}
@@ -113,7 +127,8 @@ export const DuplicateAlertModal: React.FC<DuplicateAlertModalProps> = ({
             </div>
           </div>
           <button
-            onClick={onClose}
+            type="button"
+            onClick={handleSafeClose}
             className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useI18n } from '../../lib/i18n';
 import { useTheme } from '../../lib/theme';
 import { useAuth } from '../../lib/auth';
+import { useModalLifecycle } from '../../hooks/useModalLifecycle';
 import { 
   Search, 
   FolderPlus, 
@@ -45,20 +46,23 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   const { logout, isSuperAdmin } = useAuth();
   const [query, setQuery] = useState('');
 
+  const { handleSafeClose, handleBackdropClick } = useModalLifecycle({
+    isOpen,
+    onClose,
+    id: 'command-palette-modal',
+  });
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        if (isOpen) onClose();
-        else onClose(); // parent toggles
-      }
-      if (e.key === 'Escape' && isOpen) {
-        onClose();
+        if (isOpen) handleSafeClose();
+        else handleSafeClose();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  }, [isOpen, handleSafeClose]);
 
   if (!isOpen) return null;
 
@@ -218,8 +222,16 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   );
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-start justify-center pt-20 px-4">
-      <div className="w-full max-w-xl bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl shadow-black overflow-hidden ring-1 ring-cyan-500/20 animate-in fade-in zoom-in-95 duration-150">
+    <div 
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-start justify-center pt-16 sm:pt-20 px-3 sm:px-4 overflow-y-auto"
+      onClick={handleBackdropClick}
+    >
+      <div 
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-xl bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl shadow-black overflow-hidden ring-1 ring-cyan-500/20 animate-in fade-in zoom-in-95 duration-150 mb-10"
+      >
         
         {/* Search input bar */}
         <div className="flex items-center gap-3 px-4 py-3.5 border-b border-slate-800 bg-slate-950/50">
@@ -232,7 +244,11 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
             placeholder={isRTL ? 'ابحث عن أمر أو صفحة أو إجراء...' : 'Type a command or jump to...'}
             className="flex-1 bg-transparent text-sm text-white placeholder-slate-500 focus:outline-none"
           />
-          <button onClick={onClose} className="text-slate-400 hover:text-white p-1">
+          <button 
+            type="button"
+            onClick={handleSafeClose} 
+            className="text-slate-400 hover:text-white p-1 cursor-pointer rounded-lg hover:bg-slate-800 transition-colors"
+          >
             <X className="w-4 h-4" />
           </button>
         </div>

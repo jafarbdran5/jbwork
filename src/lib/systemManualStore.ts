@@ -237,6 +237,128 @@ export const INITIAL_MANUAL_ARTICLES: ManualArticle[] = [
     updatedAt: '2026-01-01T00:00:00.000Z'
   },
 
+  // Dashboard & Home Chapter
+  {
+    id: 'art_dashboard_home_guide',
+    chapterId: 'dashboard_home',
+    titleAr: 'اللوحة الرئيسية ومركز العمل اليومي (My Day & Life OS)',
+    titleEn: 'Home Dashboard, My Day, & Life OS Focus Engine',
+    summaryAr: 'شرح اللوحة الرئيسية، متابعة الإحصائيات الفورية، إدارة خطة اليوم، ونظام إدارة الحياة الرقمية.',
+    summaryEn: 'Comprehensive guide to daily operations, quick stats, today plan, and personal Life OS workflow.',
+    contentMarkdownAr: `### اللوحة الرئيسية ومركز العمل اليومي
+1. **المؤشرات الحية:**
+   - تعرض اللوحة عداد القضايا النشطة، الطلبات المعلقة، المهام العاجلة، والأرباح المحققة.
+2. **خطة اليوم (My Day):**
+   - تنظيم المهام والتذكيرات ذات الأولوية لليوم الحالي للتركيز دون تشتت.
+3. **نظام إدارة الحياة الشخصية (Life OS):**
+   - تتبع الأهداف، العادات اليومية، والمشاريع الاستراتيجية جنباً إلى جنب مع العمل القانوني والإداري.`,
+    contentMarkdownEn: 'Unified home dashboard combining live case metrics, focused daily agenda, and personal life management.',
+    steps: [
+      {
+        stepNumber: 1,
+        titleAr: 'بدء اليوم',
+        titleEn: 'Start My Day',
+        descriptionAr: 'استعرض المهام ذات الموعد النهائي اليوم والقضايا المجدولة للمتابعة.',
+        descriptionEn: 'Review prioritized today tasks and scheduled case follow-ups.'
+      },
+      {
+        stepNumber: 2,
+        titleAr: 'الإجراءات السريعة',
+        titleEn: 'Quick Actions',
+        descriptionAr: 'استخدم الزر العائم أو أزرار الوصول السريع لإنشاء قضية أو مهمة فوراً.',
+        descriptionEn: 'Use FAB or quick action buttons to instantly register cases or tasks.'
+      }
+    ],
+    targetModuleId: 'dashboard',
+    tags: ['لوحة_التحكم', 'الرئيسية', 'يومي', 'dashboard', 'life_os', 'my_day'],
+    sortOrder: 1,
+    isImportant: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z'
+  },
+
+  // Clients Directory Chapter
+  {
+    id: 'art_clients_directory_guide',
+    chapterId: 'clients_directory',
+    titleAr: 'دليل الموكلين والمعرف الفريد وملف الموكل الشامل',
+    titleEn: 'Clients Directory, Unique Client IDs & Case History',
+    summaryAr: 'كيفية إنشاء ملف الموكل، توليد المعرف الدائم (CLT-ID)، واستعراض كافة قضايا ومستندات الموكل.',
+    summaryEn: 'Managing clients directory, permanent unique client identifiers (CLT-ID), and aggregated case histories.',
+    contentMarkdownAr: `### دليل الموكلين والمعرف الفريد
+1. **المعرف الدائم للموكل (CLT-ID):**
+   - يولد النظام معرفاً فريداً غير متكرر لكل موكل يربط جميع القضايا والبلاغات والمدفوعات الخاصة به في سجل واحد.
+2. **ملف الموكل الموحد:**
+   - بنقرة واحدة على اسم الموكل، تشاهد كافة القضايا السابقة والحالية، المبالغ المالية المدفوعة، والملاحظات التاريخية.
+3. **الاتصال السريع:**
+   - دعم الاتصال الهاتفي المباشر والمحادثة عبر واتساب بنقرة زر واحدة.`,
+    contentMarkdownEn: 'Unified client profiles with permanent CLT-IDs aggregating all historical cases, payments, and direct WhatsApp/Phone actions.',
+    steps: [
+      {
+        stepNumber: 1,
+        titleAr: 'إضافة أو ربط موكل',
+        titleEn: 'Add/Link Client',
+        descriptionAr: 'أدخل اسم الموكل ورقم هاتفه، وسيقوم النظام بربطه تلقائياً أو إنشاء سجل جديد.',
+        descriptionEn: 'Enter client name and phone; system automatically links or generates a profile.'
+      },
+      {
+        stepNumber: 2,
+        titleAr: 'استعراض السجل الشامل',
+        titleEn: 'View Full History',
+        descriptionAr: 'افتح قسم العملاء لمشاهدة كافة قضايا ومستندات كل عميل.',
+        descriptionEn: 'Open Clients module to review all aggregated cases, invoices, and documents.'
+      }
+    ],
+    targetModuleId: 'clients',
+    tags: ['عملاء', 'موكلين', 'سجل', 'clients', 'clt-id'],
+    sortOrder: 1,
+    isImportant: true,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z'
+  },
+
+  // Tasks Chapter
+  {
+    id: 'art_tasks_tracking_guide',
+    chapterId: 'tasks_tracking',
+    titleAr: 'إدارة المهام والمتابعات وربطها بالقضايا والجداول',
+    titleEn: 'Tasks Management, Priorities & Linked Workflows',
+    summaryAr: 'إنشاء المهام، تعيين المشرف المسؤول، تحديد الأولويات والمواعيد، وربط المهمة بالقضية.',
+    summaryEn: 'Creating actionable tasks, assigning supervisors, configuring priority matrices, and linking to cases.',
+    contentMarkdownAr: `### إدارة المهام والمتابعات
+1. **إنشاء المهمة وربطها:**
+   - يمكن إنشاء مهام مستقلة أو مهام متفرعة من قضية معينة.
+2. **الأولويات والحالات:**
+   - تصنيف المهمة (عاجلة / عالية / متوسطة / منخفضة) مع تنبيهات تلقائية باقتراب موعد الاستحقاق.
+3. **توزيع المهام بين المشرفين:**
+   - يستطيع المشرف العام إسناد أي مهمة لعضو فريق محدد ومتابعة نسبة الإنجاز فورياً.`,
+    contentMarkdownEn: 'Task assignment and tracking with tight case integration and deadline notifications.',
+    targetModuleId: 'tasks',
+    tags: ['مهام', 'متابعات', 'tasks', 'todo'],
+    sortOrder: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z'
+  },
+
+  // AI Assistant Chapter
+  {
+    id: 'art_ai_assistant_operations_guide',
+    chapterId: 'ai_assistant_guide',
+    titleAr: 'المساعد الذكي: الاستعلامات السريعة وتنفيذ الأوامر بحسب الصلاحيات',
+    titleEn: 'AI Operations Assistant: Natural Language & Security Rules',
+    summaryAr: 'كيفية استخدام المساعد الذكي لاستخراج الإحصائيات، البحث عن القضايا، وتنفيذ الإجراءات مع الالتزام الصارم بالصلاحيات.',
+    summaryEn: 'Guide to AI-powered querying, case summaries, data retrieval, and role-based execution boundaries.',
+    contentMarkdownAr: `### المساعد الذكي وأوامر التشغيل
+- **الاستعلامات الطبيعية:** يمكنك سؤال المساعد: *"كم قضية مفتوحة لدينا لإنستغرام؟"* أو *"ما هي القضايا العاجلة لليوم؟"*
+- **إنشاء المهام والقضايا:** يدعم المساعد تحويل مدخلاتك النصية السريعة إلى مهام وقضايا مسجلة.
+- **الحماية الصارمة للصلاحيات:** لا يمكن للمساعد تنفيذ أو كشف أي معلومة لا يملك المستخدم صلاحية الوصول إليها.`,
+    contentMarkdownEn: 'Instant AI assistant with strict role-based data security and natural language productivity commands.',
+    tags: ['ذكاء_اصطناعي', 'مساعد', 'ai', 'assistant', 'gemini'],
+    sortOrder: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z'
+  },
+
   // Cases Chapter
   {
     id: 'art_cases_lifecycle',
@@ -479,7 +601,17 @@ export function getSavedManualChapters(): ManualChapter[] {
       return INITIAL_MANUAL_CHAPTERS;
     }
     const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      // Merge any new initial chapters that don't exist in saved
+      const existingIds = new Set(parsed.map((c: any) => c.id));
+      const missing = INITIAL_MANUAL_CHAPTERS.filter(c => !existingIds.has(c.id));
+      if (missing.length > 0) {
+        const merged = [...parsed, ...missing];
+        localStorage.setItem(LOCAL_MANUAL_CHAPTERS_KEY, JSON.stringify(merged));
+        return merged;
+      }
+      return parsed;
+    }
   } catch (e) {
     console.warn('Manual chapters load error:', e);
   }
@@ -495,7 +627,17 @@ export function getSavedManualArticles(): ManualArticle[] {
       return INITIAL_MANUAL_ARTICLES;
     }
     const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      // Merge any initial articles that might be missing in older stored data
+      const existingIds = new Set(parsed.map((a: any) => a.id));
+      const missing = INITIAL_MANUAL_ARTICLES.filter(a => !existingIds.has(a.id));
+      if (missing.length > 0) {
+        const merged = [...parsed, ...missing];
+        localStorage.setItem(LOCAL_MANUAL_ARTICLES_KEY, JSON.stringify(merged));
+        return merged;
+      }
+      return parsed;
+    }
   } catch (e) {
     console.warn('Manual articles load error:', e);
   }

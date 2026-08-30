@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../../lib/auth';
 import { useI18n } from '../../lib/i18n';
+import { useModalLifecycle } from '../../hooks/useModalLifecycle';
 import { executeAssistantCommand } from './assistantTools';
 import { 
   Sparkles, 
@@ -117,6 +118,13 @@ Directly connected to cases, external requests, tasks, and team members. Ask me 
     }
   };
 
+  const { handleSafeClose, handleBackdropClick } = useModalLifecycle({
+    isOpen,
+    onClose,
+    id: 'jb-ai-assistant-modal',
+    isSubmitting: isThinking,
+  });
+
   const handleCopyText = (text: string, msgId: string) => {
     navigator.clipboard.writeText(text);
     setCopiedId(msgId);
@@ -124,8 +132,16 @@ Directly connected to cases, external requests, tasks, and team members. Ask me 
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
-      <div className="bg-[#121214] border border-[#27272A] rounded-2xl w-full max-w-2xl h-[85vh] max-h-[650px] flex flex-col shadow-2xl overflow-hidden">
+    <div 
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-xs animate-in fade-in duration-150 overflow-y-auto"
+      onClick={handleBackdropClick}
+    >
+      <div 
+        onClick={(e) => e.stopPropagation()}
+        className="bg-[#121214] border border-[#27272A] rounded-2xl w-full max-w-2xl h-[85vh] max-h-[650px] flex flex-col shadow-2xl overflow-hidden my-auto animate-in zoom-in-95 duration-150"
+      >
         
         {/* Header */}
         <div className="p-4 border-b border-[#27272A] bg-[#18181B] flex items-center justify-between">
@@ -147,7 +163,8 @@ Directly connected to cases, external requests, tasks, and team members. Ask me 
           </div>
 
           <button 
-            onClick={onClose} 
+            type="button"
+            onClick={handleSafeClose} 
             className="p-2 text-[#71717A] hover:text-white rounded-lg hover:bg-[#27272A] cursor-pointer transition-colors"
             title={isRTL ? 'إغلاق' : 'Close'}
           >

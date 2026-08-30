@@ -85,6 +85,7 @@ import {
   Edit3
 } from 'lucide-react';
 import { QuickRenameModal } from '../common/QuickRenameModal';
+import { useModalLifecycle } from '../../hooks/useModalLifecycle';
 
 interface PublicSheetsModuleProps {
   onSelectCase?: (caseId: string) => void;
@@ -126,6 +127,46 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
   const [previewingFile, setPreviewingFile] = useState<{ url: string; title: string } | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Modal Lifecycle Handlers to prevent hanging
+  const addModalLifecycle = useModalLifecycle({
+    isOpen: isAddModalOpen,
+    onClose: () => setIsAddModalOpen(false),
+    id: 'public-sheets-add-modal',
+  });
+
+  const addTabModalLifecycle = useModalLifecycle({
+    isOpen: isAddTabModalOpen,
+    onClose: () => setIsAddTabModalOpen(false),
+    id: 'public-sheets-tab-modal',
+  });
+
+  const linkCaseModalLifecycle = useModalLifecycle({
+    isOpen: isLinkToCaseModalOpen && Boolean(linkingRow),
+    onClose: () => {
+      setIsLinkToCaseModalOpen(false);
+      setLinkingRow(null);
+    },
+    id: 'public-sheets-link-case-modal',
+  });
+
+  const inspectRowModalLifecycle = useModalLifecycle({
+    isOpen: Boolean(inspectingRow),
+    onClose: () => setInspectingRow(null),
+    id: 'public-sheets-inspect-row-modal',
+  });
+
+  const previewFileModalLifecycle = useModalLifecycle({
+    isOpen: Boolean(previewingFile),
+    onClose: () => setPreviewingFile(null),
+    id: 'public-sheets-preview-file-modal',
+  });
+
+  const guideModalLifecycle = useModalLifecycle({
+    isOpen: isGuideModalOpen,
+    onClose: () => setIsGuideModalOpen(false),
+    id: 'public-sheets-guide-modal',
+  });
 
   // New Tab Form State
   const [newTabName, setNewTabName] = useState('');
@@ -1512,7 +1553,9 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                             return (
                               <tr 
                                 key={row._rowId || rIdx}
-                                className={`hover:bg-slate-800/40 transition-colors ${
+                                onClick={() => setInspectingRow(row)}
+                                title={isRTL ? "انقر لعرض تفاصيل ومعلومات القضية كاملة" : "Click to view full row and case details"}
+                                className={`hover:bg-slate-800/60 active:bg-slate-800/80 transition-colors cursor-pointer select-none group ${
                                   isLinkedToCase ? 'bg-indigo-950/20' : ''
                                 }`}
                               >
@@ -1524,28 +1567,37 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                                 <td className="py-3 px-3.5 whitespace-nowrap">
                                   {isLinkedToCase ? (
                                     <button
-                                      onClick={() => {
+                                      onClick={(e) => {
+                                        e.stopPropagation();
                                         if (row._linkedCaseId && onSelectCase) {
                                           onSelectCase(row._linkedCaseId);
+                                        } else {
+                                          setInspectingRow(row);
                                         }
                                       }}
-                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-500/30 transition-colors"
+                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 hover:bg-indigo-500/30 transition-colors cursor-pointer"
                                     >
                                       <Briefcase className="w-3 h-3 text-indigo-400" />
                                       <span>{row._linkedCaseNumber || (isRTL ? 'قضية مرتبطة' : 'Linked Case')}</span>
                                     </button>
                                   ) : isClientCreated ? (
                                     <button
-                                      onClick={() => onNavigate && onNavigate('clients')}
-                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30 transition-colors"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onNavigate && onNavigate('clients');
+                                      }}
+                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30 transition-colors cursor-pointer"
                                     >
                                       <UserPlus className="w-3 h-3 text-emerald-400" />
                                       <span>{isRTL ? 'عميل مسجل' : 'Client Saved'}</span>
                                     </button>
                                   ) : isTaskCreated ? (
                                     <button
-                                      onClick={() => onNavigate && onNavigate('tasks')}
-                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 hover:bg-cyan-500/30 transition-colors"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onNavigate && onNavigate('tasks');
+                                      }}
+                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 hover:bg-cyan-500/30 transition-colors cursor-pointer"
                                     >
                                       <CheckSquare className="w-3 h-3 text-cyan-400" />
                                       <span>{isRTL ? 'مهمة عمل' : 'Task Assigned'}</span>
@@ -1567,7 +1619,10 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                                     <td key={col.id} className="py-3 px-3.5 text-slate-300 whitespace-nowrap max-w-xs truncate">
                                       {analysis.isDrive ? (
                                         <button
-                                          onClick={() => setPreviewingFile({ url: cellVal, title: `${col.label} - صف ${row._rowIndex}` })}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setPreviewingFile({ url: cellVal, title: `${col.label} - صف ${row._rowIndex}` });
+                                          }}
                                           className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 transition-colors cursor-pointer"
                                         >
                                           <HardDrive className="w-3 h-3 text-indigo-400" />
@@ -1578,6 +1633,7 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                                           href={cellVal}
                                           target="_blank"
                                           rel="noopener noreferrer"
+                                          onClick={(e) => e.stopPropagation()}
                                           className="inline-flex items-center gap-1 text-cyan-400 hover:underline"
                                         >
                                           <ExternalLink className="w-3 h-3" />
@@ -1599,7 +1655,10 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                                   <div className="flex items-center justify-center gap-1">
                                     <button
                                       title={isRTL ? 'معاينة كامل تفاصيل الصف' : 'Inspect'}
-                                      onClick={() => setInspectingRow(row)}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setInspectingRow(row);
+                                      }}
                                       className="p-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer"
                                     >
                                       <Eye className="w-3.5 h-3.5" />
@@ -1607,7 +1666,8 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
 
                                     <button
                                       title={isRTL ? 'ربط بقضية قائمة في المنظومة' : 'Link to Case'}
-                                      onClick={() => {
+                                      onClick={(e) => {
+                                        e.stopPropagation();
                                         setLinkingRow(row);
                                         setIsLinkToCaseModalOpen(true);
                                       }}
@@ -1618,7 +1678,10 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
 
                                     <button
                                       title={isRTL ? 'تحويل إلى قضية جديدة فوراً' : 'Create Case'}
-                                      onClick={() => handleTransferRowToCase(row)}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleTransferRowToCase(row);
+                                      }}
                                       className="p-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 transition-colors cursor-pointer"
                                     >
                                       <Briefcase className="w-3.5 h-3.5" />
@@ -1626,7 +1689,10 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
 
                                     <button
                                       title={isRTL ? 'حذف هذا الصف' : 'Delete Row'}
-                                      onClick={() => handleDeleteRow(row._rowId)}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDeleteRow(row._rowId);
+                                      }}
                                       className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-colors cursor-pointer"
                                     >
                                       <Trash2 className="w-3.5 h-3.5" />
@@ -1675,7 +1741,8 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                       return (
                         <div
                           key={row._rowId}
-                          className="p-4 rounded-2xl border border-slate-800 bg-slate-900/50 hover:border-slate-700 transition-all space-y-3"
+                          onClick={() => setInspectingRow(row)}
+                          className="p-4 rounded-2xl border border-slate-800 bg-slate-900/50 hover:border-indigo-500/50 hover:bg-slate-900/80 transition-all space-y-3 cursor-pointer select-none group"
                         >
                           <div className="flex items-start justify-between gap-2">
                             <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-800 text-slate-400">
@@ -1683,10 +1750,21 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                             </span>
 
                             {isLinkedToCase ? (
-                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (row._linkedCaseId && onSelectCase) {
+                                    onSelectCase(row._linkedCaseId);
+                                  } else {
+                                    setInspectingRow(row);
+                                  }
+                                }}
+                                className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 flex items-center gap-1 hover:bg-indigo-500/30 transition-colors"
+                              >
                                 <Briefcase className="w-3 h-3" />
                                 <span>{row._linkedCaseNumber || (isRTL ? 'مرتبط بقضية' : 'Linked')}</span>
-                              </span>
+                              </button>
                             ) : (
                               <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-400">
                                 {isRTL ? 'استجابة جديدة' : 'New'}
@@ -1711,7 +1789,11 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                           {/* Card Quick Actions */}
                           <div className="flex items-center justify-between pt-2 border-t border-slate-800">
                             <button
-                              onClick={() => setInspectingRow(row)}
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setInspectingRow(row);
+                              }}
                               className="text-xs text-indigo-400 hover:underline font-bold flex items-center gap-1"
                             >
                               <Eye className="w-3.5 h-3.5" />
@@ -1720,7 +1802,9 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
 
                             <div className="flex items-center gap-1.5">
                               <button
-                                onClick={() => {
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
                                   setLinkingRow(row);
                                   setIsLinkToCaseModalOpen(true);
                                 }}
@@ -1729,13 +1813,21 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                                 {isRTL ? 'ربط بقضية' : 'Link'}
                               </button>
                               <button
-                                onClick={() => handleTransferRowToCase(row)}
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleTransferRowToCase(row);
+                                }}
                                 className="px-2.5 py-1 rounded-lg bg-emerald-600/20 text-emerald-300 text-xs font-bold hover:bg-emerald-600/30 transition-colors"
                               >
                                 {isRTL ? 'إنشاء قضية' : 'Create Case'}
                               </button>
                               <button
-                                onClick={() => handleDeleteRow(row._rowId)}
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteRow(row._rowId);
+                                }}
                                 title={isRTL ? 'حذف هذا الصف' : 'Delete Row'}
                                 className="p-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 transition-colors"
                               >
@@ -1780,8 +1872,16 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
       {/* 🚀 MODAL 1: ADD NEW GOOGLE SHEET (URL or DIRECT PASTE) 🚀 */}
       {/* ======================================================== */}
       {isAddModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in">
-          <div className="w-full max-w-xl rounded-2xl bg-slate-900 border border-slate-800 p-6 shadow-2xl space-y-5 text-right">
+        <div 
+          onClick={addModalLifecycle.handleBackdropClick}
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in"
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-xl rounded-2xl bg-slate-900 border border-slate-800 p-6 shadow-2xl space-y-5 text-right"
+          >
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className="flex items-center gap-2">
                 <FileSpreadsheet className="w-5 h-5 text-indigo-400" />
@@ -2050,8 +2150,16 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
       {/* 📄 MODAL 2: ADD CUSTOM WORKSHEET TAB (BY NAME OR GID) 📄 */}
       {/* ======================================================== */}
       {isAddTabModalOpen && activeSheet && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in">
-          <div className="w-full max-w-md rounded-2xl bg-slate-900 border border-slate-800 p-6 shadow-2xl space-y-4 text-right">
+        <div 
+          onClick={addTabModalLifecycle.handleBackdropClick}
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in"
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-2xl bg-slate-900 border border-slate-800 p-6 shadow-2xl space-y-4 text-right"
+          >
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className="flex items-center gap-2">
                 <Compass className="w-5 h-5 text-indigo-400" />
@@ -2123,8 +2231,16 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
       {/* ⚖️ MODAL 3: DIRECT LINK TO EXISTING SYSTEM CASE ⚖️ */}
       {/* ======================================================== */}
       {isLinkToCaseModalOpen && linkingRow && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in">
-          <div className="w-full max-w-lg rounded-2xl bg-slate-900 border border-slate-800 p-6 shadow-2xl space-y-4 text-right">
+        <div 
+          onClick={linkCaseModalLifecycle.handleBackdropClick}
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in"
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-lg rounded-2xl bg-slate-900 border border-slate-800 p-6 shadow-2xl space-y-4 text-right"
+          >
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className="flex items-center gap-2">
                 <Briefcase className="w-5 h-5 text-indigo-400" />
@@ -2209,8 +2325,16 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
       {/* 🔍 MODAL 4: ROW INSPECT & COMPREHENSIVE ACTIONS MODAL 🔍 */}
       {/* ======================================================== */}
       {inspectingRow && activeSheet && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md animate-in fade-in">
-          <div className="w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl text-right overflow-hidden">
+        <div 
+          onClick={inspectRowModalLifecycle.handleBackdropClick}
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md animate-in fade-in"
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl text-right overflow-hidden"
+          >
             
             {/* Modal Header */}
             <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
@@ -2220,7 +2344,7 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-white">
-                    {isRTL ? `تفاصيل الاستجابة (الصف #${inspectingRow._rowIndex})` : `Row Response #${inspectingRow._rowIndex}`}
+                    {isRTL ? `معلومات وتفاصيل الاستجابة (الصف #${inspectingRow._rowIndex})` : `Row & Case Details (Row #${inspectingRow._rowIndex})`}
                   </h3>
                   <p className="text-[11px] text-slate-400">{activeSheet.title}</p>
                 </div>
@@ -2234,8 +2358,48 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
               </button>
             </div>
 
-            {/* Modal Body: Fields List */}
+            {/* Modal Body: Fields List & Case Info */}
             <div className="p-5 overflow-y-auto space-y-4 flex-1">
+
+              {/* 🌟 PROMINENT LINKED CASE BANNER 🌟 */}
+              {(inspectingRow._linkedCaseNumber || inspectingRow._linkedCaseId || inspectingRow._systemStatus === 'case_linked' || inspectingRow._systemStatus === 'case_created') && (
+                <div className="p-4 rounded-xl bg-indigo-950/40 border border-indigo-500/40 flex items-center justify-between gap-3 flex-wrap shadow-inner">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center shrink-0 border border-indigo-500/30">
+                      <Briefcase className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-indigo-300">
+                          {isRTL ? 'بيانات القضية المرتبطة في المنظومة:' : 'Linked System Case:'}
+                        </span>
+                        <span className="font-mono font-bold text-xs bg-indigo-500/30 text-indigo-200 px-2 py-0.5 rounded border border-indigo-400/40">
+                          {inspectingRow._linkedCaseNumber || (isRTL ? 'قضية مسجلة' : 'Registered Case')}
+                        </span>
+                      </div>
+                      {inspectingRow._linkedClientName && (
+                        <p className="text-[11px] text-slate-300 mt-0.5">
+                          {isRTL ? `الموكل: ${inspectingRow._linkedClientName}` : `Client: ${inspectingRow._linkedClientName}`}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {inspectingRow._linkedCaseId && onSelectCase && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setInspectingRow(null);
+                        onSelectCase(inspectingRow._linkedCaseId!);
+                      }}
+                      className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-2 cursor-pointer shadow-md transition-all active:scale-95"
+                    >
+                      <Briefcase className="w-4 h-4" />
+                      <span>{isRTL ? 'الانتقال لملف القضية مباشرة' : 'Open Case File'}</span>
+                    </button>
+                  )}
+                </div>
+              )}
               
               {/* System Linkage Bar */}
               <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-3 flex-wrap">
@@ -2249,7 +2413,7 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                       handleQuickCreateClient(inspectingRow);
                       setInspectingRow(null);
                     }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 transition-colors"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 transition-colors cursor-pointer"
                   >
                     <UserPlus className="w-3.5 h-3.5" />
                     <span>{isRTL ? 'تسجيل كعميل' : 'Add Client'}</span>
@@ -2260,7 +2424,7 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                       handleQuickCreateTask(inspectingRow);
                       setInspectingRow(null);
                     }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/30 transition-colors"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/30 transition-colors cursor-pointer"
                   >
                     <CheckSquare className="w-3.5 h-3.5" />
                     <span>{isRTL ? 'إنشاء مهمة' : 'Add Task'}</span>
@@ -2269,7 +2433,7 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                   {inspectingRow._fileUrls && inspectingRow._fileUrls.length > 0 && (
                     <button
                       onClick={() => handleSaveFilesToVault(inspectingRow)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 transition-colors"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 transition-colors cursor-pointer"
                     >
                       <FolderPlus className="w-3.5 h-3.5" />
                       <span>{isRTL ? 'حفظ في المستندات' : 'Save to Vault'}</span>
@@ -2291,7 +2455,7 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                         <span>{col.label}</span>
                         <button
                           onClick={() => handleCopy(String(val), col.id)}
-                          className="text-slate-500 hover:text-slate-300 flex items-center gap-1"
+                          className="text-slate-500 hover:text-slate-300 flex items-center gap-1 cursor-pointer"
                         >
                           <Copy className="w-3 h-3" />
                           <span>{isRTL ? 'نسخ' : 'Copy'}</span>
@@ -2303,7 +2467,7 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                           <div className="flex items-center gap-2 pt-1">
                             <button
                               onClick={() => setPreviewingFile({ url: String(val), title: `${col.label}` })}
-                              className="inline-flex items-center gap-1 px-3 py-1 rounded-lg text-xs font-bold bg-indigo-600 text-white hover:bg-indigo-500 transition-colors"
+                              className="inline-flex items-center gap-1 px-3 py-1 rounded-lg text-xs font-bold bg-indigo-600 text-white hover:bg-indigo-500 transition-colors cursor-pointer"
                             >
                               <Eye className="w-3.5 h-3.5" />
                               <span>{isRTL ? 'معاينة المستند الآن' : 'Preview Document'}</span>
@@ -2343,7 +2507,7 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
               <button
                 type="button"
                 onClick={() => setInspectingRow(null)}
-                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white"
+                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white cursor-pointer"
               >
                 {isRTL ? 'إغلاق' : 'Close'}
               </button>
@@ -2354,7 +2518,7 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
                   handleTransferRowToCase(inspectingRow);
                   setInspectingRow(null);
                 }}
-                className="flex items-center gap-2 px-5 py-2 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg transition-all"
+                className="flex items-center gap-2 px-5 py-2 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg transition-all cursor-pointer"
               >
                 <Briefcase className="w-4 h-4" />
                 <span>{isRTL ? 'تحويل إلى ملف قضية جديد' : 'Convert to Case'}</span>
@@ -2368,8 +2532,16 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
       {/* 🖼️ MODAL 5: INTERACTIVE FILE & DRIVE DOC PREVIEWER 🖼️ */}
       {/* ======================================================== */}
       {previewingFile && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in">
-          <div className="w-full max-w-4xl h-[85vh] flex flex-col rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl overflow-hidden text-right">
+        <div 
+          onClick={previewFileModalLifecycle.handleBackdropClick}
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in"
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-4xl h-[85vh] flex flex-col rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl overflow-hidden text-right"
+          >
             <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950">
               <div className="flex items-center gap-2">
                 <HardDrive className="w-5 h-5 text-indigo-400" />
@@ -2412,8 +2584,16 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
       {/* 📖 MODAL 6: QUICK INTEGRATION & SHARING GUIDE 📖 */}
       {/* ======================================================== */}
       {isGuideModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in">
-          <div className="w-full max-w-lg rounded-2xl bg-slate-900 border border-slate-800 p-6 shadow-2xl space-y-4 text-right">
+        <div 
+          onClick={guideModalLifecycle.handleBackdropClick}
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in"
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-lg rounded-2xl bg-slate-900 border border-slate-800 p-6 shadow-2xl space-y-4 text-right"
+          >
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className="flex items-center gap-2">
                 <HelpCircle className="w-5 h-5 text-indigo-400" />

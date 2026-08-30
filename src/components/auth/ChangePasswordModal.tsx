@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../lib/auth';
 import { useI18n } from '../../lib/i18n';
+import { useModalLifecycle } from '../../hooks/useModalLifecycle';
 import { 
   Lock, 
   KeyRound, 
@@ -30,6 +31,13 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ isOpen
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  const { handleSafeClose, handleBackdropClick } = useModalLifecycle({
+    isOpen,
+    onClose,
+    id: 'change-password-modal',
+    isSubmitting: loading,
+  });
 
   if (!isOpen) return null;
 
@@ -62,7 +70,7 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ isOpen
       setNewPassword('');
       setConfirmPassword('');
       setTimeout(() => {
-        onClose();
+        handleSafeClose();
         setSuccessMsg(null);
       }, 1500);
     } catch (err: any) {
@@ -80,15 +88,22 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ isOpen
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div 
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 overflow-y-auto"
+      onClick={handleBackdropClick}
+    >
       <div 
-        className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl relative text-slate-100 ring-1 ring-cyan-500/10"
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md max-h-[88vh] overflow-y-auto my-auto bg-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6 shadow-2xl relative text-slate-100 ring-1 ring-cyan-500/10 animate-in fade-in zoom-in-95 duration-150"
         dir={isRTL ? 'rtl' : 'ltr'}
       >
         {/* Close Button */}
         <button
-          onClick={onClose}
-          className="absolute top-4 left-4 sm:left-4 sm:right-auto text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors"
+          type="button"
+          onClick={handleSafeClose}
+          className="absolute top-4 left-4 sm:left-4 sm:right-auto text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
         >
           <X className="w-5 h-5" />
         </button>
@@ -204,7 +219,7 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ isOpen
             </button>
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleSafeClose}
               className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition-colors cursor-pointer"
             >
               {isRTL ? 'إلغاء' : 'Cancel'}

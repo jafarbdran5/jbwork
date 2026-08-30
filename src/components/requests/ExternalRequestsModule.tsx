@@ -80,7 +80,9 @@ import {
   Download,
   BarChart3,
   Filter,
-  CheckCheck
+  CheckCheck,
+  Pencil,
+  FileText
 } from 'lucide-react';
 import { SheetStatsCards } from './SheetStatsCards';
 import { AddSheetModal } from './AddSheetModal';
@@ -184,6 +186,8 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
   // Tab Form State
   const [newTabName, setNewTabName] = useState('');
   const [newTabGid, setNewTabGid] = useState('');
+  const [renamingTab, setRenamingTab] = useState<{ gid: string; currentName: string } | null>(null);
+  const [renamedTabInput, setRenamedTabInput] = useState('');
 
   // Add Sheet Form State
   const [importMode, setImportMode] = useState<'url' | 'paste'>('url');
@@ -316,7 +320,7 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
     showToast(`جاري التبديل إلى ورقة العمل "${tab.name}"...`);
 
     try {
-      const res = await fetchPublicGoogleSheet(target.url, tab.gid);
+      const res = await fetchPublicGoogleSheet(target.url, tab.gid, tab.name);
       const refreshed: SavedPublicSheet = {
         ...updatedSheet,
         columns: res.columns,
@@ -406,6 +410,41 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
     handleSwitchTab(currentSheet.id, newTab);
   };
 
+  // Start renaming a tab
+  const handleStartRenameTab = (tab: SheetWorksheetTab) => {
+    setRenamingTab({ gid: tab.gid, currentName: tab.name });
+    setRenamedTabInput(tab.name);
+  };
+
+  // Save renamed tab
+  const handleSaveRenameTab = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!renamingTab || !currentSheet) return;
+    const newName = renamedTabInput.trim();
+    if (!newName) {
+      showToast('يرجى كتابة اسم صحيح لورقة العمل');
+      return;
+    }
+
+    const existingTabs = currentSheet.tabs || [{ gid: currentSheet.gid || '0', name: currentSheet.activeTabName || 'الورقة الرئيسية', isDefault: true }];
+    const updatedTabs = existingTabs.map(t =>
+      t.gid === renamingTab.gid ? { ...t, name: newName } : t
+    );
+
+    const isCurrentActive = (currentSheet.gid || '0') === renamingTab.gid;
+
+    const updatedSheet: SavedPublicSheet = {
+      ...currentSheet,
+      tabs: updatedTabs,
+      activeTabName: isCurrentActive ? newName : currentSheet.activeTabName
+    };
+
+    savePublicSheet(updatedSheet);
+    setSheets(getSavedPublicSheets());
+    setRenamingTab(null);
+    showToast(`✓ تم تغيير اسم ورقة العمل إلى "${newName}" بنجاح`);
+  };
+
   // Delete Tab / Worksheet
   const handleDeleteTab = (tabGid: string, tabName: string) => {
     if (!currentSheet) return;
@@ -444,7 +483,7 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
     setSheets(getSavedPublicSheets());
 
     try {
-      const res = await fetchPublicGoogleSheet(sheet.url, sheet.gid || '0');
+      const res = await fetchPublicGoogleSheet(sheet.url, sheet.gid || '0', sheet.activeTabName);
       const synced: SavedPublicSheet = {
         ...sheet,
         columns: res.columns,
@@ -1298,29 +1337,52 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
                   </div>
 
                   {(currentSheet.tabs || [{ gid: currentSheet.gid || '0', name: currentSheet.activeTabName || 'استجابات النموذج 1', isDefault: true }]).map((tab, idx) => {
-                    const isActive = (currentSheet.gid || '0') === tab.gid;
+                    const isActive = (currentSheet.gid || '0') === tab.gid || (Boolean(currentSheet.activeTabName) && tab.name === currentSheet.activeTabName);
                     const totalTabs = (currentSheet.tabs || []).length;
+                    const isTabSyncing = isActive && currentSheet.syncStatus === 'syncing';
                     return (
                       <div
                         key={`${tab.gid}_${idx}`}
                         className={`flex items-center rounded-lg border text-xs font-bold transition-all shrink-0 ${
                           isActive
-                            ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs'
+                            ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs ring-1 ring-indigo-400/40'
                             : isDark
                               ? 'bg-zinc-900 text-zinc-400 hover:text-zinc-200 border-zinc-800'
                               : 'bg-white text-slate-600 hover:text-slate-900 border-slate-200'
                         }`}
                       >
                         <button
+                          type="button"
                           onClick={() => handleSwitchTab(currentSheet.id, tab)}
                           className="px-3 py-1.5 flex items-center gap-1.5 cursor-pointer"
                         >
+                          {isTabSyncing ? (
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin text-white" />
+                          ) : (
+                            <FileText className="w-3.5 h-3.5 opacity-70" />
+                          )}
                           <span>{tab.name}</span>
                           <span className={`text-[10px] px-1 py-0.2 rounded font-mono ${
                             isActive ? 'bg-indigo-700 text-white' : isDark ? 'bg-zinc-800 text-zinc-500' : 'bg-slate-100 text-slate-500'
                           }`}>
                             GID: {tab.gid}
                           </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleStartRenameTab(tab);
+                          }}
+                          title={`إعادة تسمية ورقة العمل "${tab.name}"`}
+                          className={`p-1 rounded-md transition-colors cursor-pointer ${
+                            isActive
+                              ? 'text-indigo-200 hover:text-white hover:bg-indigo-700'
+                              : 'text-zinc-500 hover:text-indigo-400 hover:bg-zinc-800'
+                          }`}
+                        >
+                          <Pencil className="w-3 h-3" />
                         </button>
 
                         <button
@@ -1509,9 +1571,9 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
             <div className={`p-12 text-center rounded-2xl border ${
               isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200'
             }`}>
-              <FileSpreadsheet className="w-12 h-12 text-slate-500 mx-auto mb-3 opacity-60" />
-              <h3 className="text-base font-bold text-white mb-1">لا توجد بيانات متاحة في ورقة العمل الحالية</h3>
-              <p className="text-xs text-slate-400 max-w-md mx-auto mb-4">
+              <FileSpreadsheet className="w-12 h-12 text-slate-400 mx-auto mb-3 opacity-80" />
+              <h3 className={`text-base font-bold mb-1 ${isDark ? 'text-white' : 'text-slate-900'}`}>لا توجد بيانات متاحة في ورقة العمل الحالية</h3>
+              <p className={`text-xs max-w-md mx-auto mb-4 ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>
                 تأكد من مشاركة الجدول كـ "عام لمن يملك الرابط" (Anyone with link can view)، أو قم بالتبديل إلى ورقة عمل أخرى من شريط الأوراق.
               </p>
               {currentSheet && (
@@ -1632,15 +1694,16 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
         onSaveSheet={(sheet) => {
-          setSheets(prev => {
-            const updated = [sheet, ...prev.filter(s => s.id !== sheet.id)];
-            localStorage.setItem('public_google_sheets_v2', JSON.stringify(updated));
-            return updated;
-          });
+          const updatedList = savePublicSheet(sheet);
+          setSheets(updatedList);
           setSelectedSheetId(sheet.id);
-          showToast(`✓ تم إضافة جدول "${sheet.title}" بنجاح!`);
-          if (sheet.url) {
-            handleSyncSheet(sheet);
+          if (sheet.rows && sheet.rows.length > 0) {
+            showToast(`✓ تم إضافة جدول "${sheet.title}" بنجاح (${sheet.rows.length} صف)!`);
+          } else {
+            showToast(`✓ تم إضافة جدول "${sheet.title}" بنجاح! جاري جلب البيانات...`);
+            if (sheet.url) {
+              handleSyncSheet(sheet);
+            }
           }
         }}
       />
@@ -1649,14 +1712,25 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
       {/* MODAL: ADD CUSTOM WORKSHEET TAB */}
       {/* ========================================== */}
       {isAddTabModalOpen && currentSheet && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className={`w-full max-w-md rounded-2xl border p-6 shadow-2xl space-y-4 animate-fade-in ${
-            isDark ? 'bg-[#18181B] border-[#27272A] text-white' : 'bg-white border-slate-200 text-slate-900'
-          }`}>
+        <div 
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5 overflow-y-auto"
+          onClick={() => setIsAddTabModalOpen(false)}
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className={`w-full max-w-md max-h-[88vh] overflow-y-auto my-auto rounded-2xl border p-5 sm:p-6 shadow-2xl space-y-4 animate-fade-in ${
+              isDark ? 'bg-[#18181B] border-[#27272A] text-white' : 'bg-white border-slate-200 text-slate-900'
+            }`}
+          >
             <div className={`flex items-center justify-between pb-3 border-b ${
               isDark ? 'border-zinc-800' : 'border-slate-200'
             }`}>
-              <h3 className="text-sm font-bold">إضافة ورقة عمل (Worksheet Tab)</h3>
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-indigo-500/10 text-indigo-500 flex items-center justify-center">
+                  <Layers className="w-4 h-4" />
+                </div>
+                <h3 className="text-sm font-bold">إضافة ورقة عمل (Worksheet Tab)</h3>
+              </div>
               <button 
                 onClick={() => setIsAddTabModalOpen(false)} 
                 className={`p-1 rounded-lg transition-colors cursor-pointer ${
@@ -1669,7 +1743,7 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
 
             <form onSubmit={handleAddCustomTab} className="space-y-3">
               <div className="space-y-1.5">
-                <label className={`text-xs font-bold ${isDark ? 'text-zinc-300' : 'text-slate-700'}`}>اسم الورقة</label>
+                <label className={`text-xs font-bold ${isDark ? 'text-zinc-300' : 'text-slate-700'}`}>اسم ورقة العمل</label>
                 <input
                   type="text"
                   value={newTabName}
@@ -1683,7 +1757,7 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
               </div>
 
               <div className="space-y-1.5">
-                <label className={`text-xs font-bold ${isDark ? 'text-zinc-300' : 'text-slate-700'}`}>معرف الورقة (GID)</label>
+                <label className={`text-xs font-bold ${isDark ? 'text-zinc-300' : 'text-slate-700'}`}>معرف ورقة العمل (GID)</label>
                 <input
                   type="text"
                   value={newTabGid}
@@ -1720,6 +1794,82 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
       )}
 
       {/* ========================================== */}
+      {/* MODAL: RENAME WORKSHEET TAB */}
+      {/* ========================================== */}
+      {renamingTab && currentSheet && (
+        <div 
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5 overflow-y-auto"
+          onClick={() => setRenamingTab(null)}
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className={`w-full max-w-md max-h-[88vh] overflow-y-auto my-auto rounded-2xl border p-5 sm:p-6 shadow-2xl space-y-4 animate-fade-in ${
+              isDark ? 'bg-[#18181B] border-[#27272A] text-white' : 'bg-white border-slate-200 text-slate-900'
+            }`}
+          >
+            <div className={`flex items-center justify-between pb-3 border-b ${
+              isDark ? 'border-zinc-800' : 'border-slate-200'
+            }`}>
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-indigo-500/10 text-indigo-500 flex items-center justify-center">
+                  <Pencil className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold">إعادة تسمية ورقة العمل</h3>
+                  <span className="text-[11px] font-mono text-zinc-400">GID: {renamingTab.gid}</span>
+                </div>
+              </div>
+              <button 
+                onClick={() => setRenamingTab(null)} 
+                className={`p-1 rounded-lg transition-colors cursor-pointer ${
+                  isDark ? 'text-zinc-400 hover:text-white' : 'text-slate-400 hover:text-slate-700'
+                }`}
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveRenameTab} className="space-y-3">
+              <div className="space-y-1.5">
+                <label className={`text-xs font-bold ${isDark ? 'text-zinc-300' : 'text-slate-700'}`}>الاسم الجديد لورقة العمل</label>
+                <input
+                  type="text"
+                  value={renamedTabInput}
+                  onChange={(e) => setRenamedTabInput(e.target.value)}
+                  placeholder="أدخل اسم الورقة..."
+                  autoFocus
+                  className={`w-full rounded-xl px-3 py-2 text-xs border focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                    isDark ? 'bg-zinc-900 border-zinc-800 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
+                  }`}
+                  required
+                />
+              </div>
+
+              <div className={`flex items-center justify-end gap-3 pt-3 border-t ${
+                isDark ? 'border-zinc-800' : 'border-slate-200'
+              }`}>
+                <button
+                  type="button"
+                  onClick={() => setRenamingTab(null)}
+                  className={`px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer transition-colors ${
+                    isDark ? 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold cursor-pointer transition-colors shadow-xs"
+                >
+                  حفظ الاسم
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================== */}
       {/* MODAL: LINK ROW TO EXISTING CASE */}
       {/* ========================================== */}
       <LinkCaseModal
@@ -1744,6 +1894,12 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
         onCreateClient={handleCreateClientFromRow}
         onCreateTask={handleCreateTaskFromRow}
         onCreateCase={handleCreateCaseFromRow}
+        onSelectCase={onSelectCase}
+        onLinkCase={(row) => {
+          setLinkingRow(row);
+          setIsLinkToCaseModalOpen(true);
+        }}
+        onPreviewFile={(file) => setPreviewingFile(file)}
       />
 
       {/* ========================================== */}

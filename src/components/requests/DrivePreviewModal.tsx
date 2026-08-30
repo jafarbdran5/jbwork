@@ -1,6 +1,7 @@
 import React from 'react';
 import { Eye, ExternalLink, X } from 'lucide-react';
 import { useTheme } from '../../lib/theme';
+import { useModalLifecycle } from '../../hooks/useModalLifecycle';
 import { getGoogleDrivePreviewUrl } from '../../lib/googleSheetsReader';
 
 interface DrivePreviewModalProps {
@@ -15,13 +16,27 @@ export const DrivePreviewModal: React.FC<DrivePreviewModalProps> = ({
   const { theme } = useTheme();
   const isDark = theme === 'dark';
 
+  const { handleSafeClose, handleBackdropClick } = useModalLifecycle({
+    isOpen: Boolean(previewingFile),
+    onClose,
+    id: 'drive-preview-modal',
+  });
+
   if (!previewingFile) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className={`w-full max-w-4xl max-h-[90vh] rounded-2xl border p-4 flex flex-col shadow-2xl ${
-        isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200'
-      }`}>
+    <div 
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 bg-black/90 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 overflow-y-auto"
+      onClick={handleBackdropClick}
+    >
+      <div 
+        onClick={(e) => e.stopPropagation()}
+        className={`w-full max-w-4xl max-h-[90vh] my-auto rounded-2xl border p-4 flex flex-col shadow-2xl animate-in fade-in zoom-in-95 duration-150 ${
+          isDark ? 'bg-[#18181B] border-[#27272A]' : 'bg-white border-slate-200'
+        }`}
+      >
         <div className={`flex items-center justify-between pb-3 border-b mb-3 ${
           isDark ? 'border-zinc-800' : 'border-slate-200'
         }`}>
@@ -44,12 +59,13 @@ export const DrivePreviewModal: React.FC<DrivePreviewModalProps> = ({
               <span>فتح في نافذة جديدة</span>
             </a>
             <button
-              onClick={onClose}
-              className={`text-xs px-3 py-1 rounded-lg cursor-pointer transition-colors ${
+              type="button"
+              onClick={handleSafeClose}
+              className={`p-1.5 rounded-lg cursor-pointer transition-colors ${
                 isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-white' : 'bg-slate-200 hover:bg-slate-300 text-slate-900'
               }`}
             >
-              إغلاق (✕)
+              <X className="w-4 h-4" />
             </button>
           </div>
         </div>

@@ -8,6 +8,213 @@ const PORT = 3000;
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// 🌟 Google Sheets Fetch & Proxy API Endpoint (Bypasses Browser CORS, Fetches GViz, CSV, TSV, HTML) 🌟
+app.get('/api/sheets/fetch-data', async (req, res) => {
+  try {
+    const rawSheetId = String(req.query.sheetId || '').trim();
+    const rawUrl = String(req.query.url || '').trim();
+    const rawGid = String(req.query.gid || '0').trim();
+    const rawSheetName = String(req.query.sheetName || '').trim();
+    const format = String(req.query.format || 'gviz').trim(); // 'gviz' | 'csv' | 'tsv'
+
+    // Extract sheetId & gid from URL if provided
+    let sheetId = rawSheetId;
+    let gid = rawGid;
+
+    if (rawUrl) {
+      // 1. Published to web format: /spreadsheets/d/e/(2PACX-[a-zA-Z0-9_-]+)
+      const pubMatch = rawUrl.match(/\/spreadsheets\/d\/e\/([a-zA-Z0-9_-]+)/);
+      if (pubMatch) {
+        if (!sheetId) sheetId = pubMatch[1];
+      } else {
+        // 2. Standard spreadsheet URL: /spreadsheets/d/([a-zA-Z0-9_-]+)
+        const stdMatch = rawUrl.match(/\/spreadsheets\/(?:u\/[0-9]+\/)?d\/([a-zA-Z0-9_-]+)/);
+        if (stdMatch) {
+          if (!sheetId) sheetId = stdMatch[1];
+        }
+      }
+      // Only fallback to URL gid if rawGid was not explicitly specified
+      if (!gid && gid !== '0') {
+        const gidMatch = rawUrl.match(/[#?&]gid=([0-9]+)/);
+        if (gidMatch) {
+          gid = gidMatch[1];
+        }
+      }
+    }
+
+    if (!gid) {
+      gid = '0';
+    }
+
+    if (!sheetId) {
+      return res.status(400).json({ success: false, message: 'معرف الشيت مطلوب (sheetId is required)' });
+    }
+
+    const isPublishedWeb = sheetId.startsWith('2PACX-') || (rawUrl && rawUrl.includes('/d/e/'));
+
+    const candidateUrls: { url: string; type: 'gviz' | 'csv' | 'tsv' | 'html' }[] = [];
+
+    if (isPublishedWeb) {
+      candidateUrls.push({
+        url: `https://docs.google.com/spreadsheets/d/e/${sheetId}/pub?output=csv${gid && gid !== '0' ? `&gid=${gid}` : ''}`,
+        type: 'csv'
+      });
+      candidateUrls.push({
+        url: `https://docs.google.com/spreadsheets/d/e/${sheetId}/pub?output=tsv${gid && gid !== '0' ? `&gid=${gid}` : ''}`,
+        type: 'tsv'
+      });
+      candidateUrls.push({
+        url: `https://docs.google.com/spreadsheets/d/e/${sheetId}/pubhtml${gid && gid !== '0' ? `?gid=${gid}` : ''}`,
+        type: 'html'
+      });
+    } else {
+      if (format === 'gviz') {
+        // 1. GViz by GID (primary)
+        candidateUrls.push({ 
+          url: `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&gid=${gid}`, 
+          type: 'gviz' 
+        });
+
+        // 2. GViz by Sheet Name (if sheet name provided)
+        if (rawSheetName) {
+          candidateUrls.push({ 
+            url: `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(rawSheetName)}`, 
+            type: 'gviz' 
+          });
+        }
+      }
+
+      // CSV Export by GID
+      candidateUrls.push({
+        url: `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`,
+        type: 'csv'
+      });
+
+      // GViz CSV by GID
+      candidateUrls.push({
+        url: `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&gid=${gid}`,
+        type: 'csv'
+      });
+
+      // GViz CSV by sheet name
+      if (rawSheetName) {
+        candidateUrls.push({
+          url: `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(rawSheetName)}`,
+          type: 'csv'
+        });
+      }
+
+      // TSV Export
+      candidateUrls.push({
+        url: `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=tsv&gid=${gid}`,
+        type: 'tsv'
+      });
+
+      // HTML view fallback
+      candidateUrls.push({
+        url: `https://docs.google.com/spreadsheets/d/${sheetId}/htmlview?gid=${gid}`,
+        type: 'html'
+      });
+    }
+
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      'Accept': '*/*',
+      'Accept-Language': 'ar,en-US,en;q=0.9'
+    };
+
+    for (const candidate of candidateUrls) {
+      try {
+        const response = await fetch(candidate.url, { headers, redirect: 'follow' });
+        if (!response.ok) continue;
+
+        const content = await response.text();
+
+        // Check if private login page
+        if (content.includes('<!DOCTYPE html>') && (content.includes('ServiceLogin') || content.includes('accounts.google.com'))) {
+          continue;
+        }
+
+        // GViz check
+        if (candidate.type === 'gviz') {
+          if (content.includes('google.visualization.Query.setResponse')) {
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.setHeader('X-Sheet-Data-Type', 'gviz');
+            return res.send(content);
+          }
+        }
+
+        // CSV / TSV check
+        if (candidate.type === 'csv' || candidate.type === 'tsv') {
+          if (content && !content.includes('<!DOCTYPE html>') && content.trim().length > 0) {
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.setHeader('X-Sheet-Data-Type', candidate.type);
+            return res.send(content);
+          }
+        }
+
+        // HTML table parser check
+        if (candidate.type === 'html' && content.includes('<table')) {
+          const parsedCsv = htmlTableToCsv(content);
+          if (parsedCsv && parsedCsv.trim().length > 0) {
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.setHeader('X-Sheet-Data-Type', 'csv');
+            return res.send(parsedCsv);
+          }
+        }
+      } catch (innerErr) {
+        // continue trying next strategy
+      }
+    }
+
+    return res.status(403).json({
+      success: false,
+      isPrivate: true,
+      message: 'تعذر قراءة بيانات هذا الشيت تلقائياً. يرجى التأكد من أن إعداد المشاركة هو: (أي شخص لديه الرابط - Anyone with the link can view).'
+    });
+  } catch (error: any) {
+    console.error('Fetch sheet data proxy error:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'حدث خطأ أثناء قراءة بيانات الشيت'
+    });
+  }
+});
+
+// Helper: Extracts HTML table rows and converts to clean CSV
+function htmlTableToCsv(html: string): string {
+  const rows: string[] = [];
+  const trMatches = html.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi);
+  if (!trMatches) return '';
+
+  for (const tr of trMatches) {
+    const cells: string[] = [];
+    const cellMatches = tr.match(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi);
+    if (!cellMatches) continue;
+
+    for (const cell of cellMatches) {
+      const text = cell
+        .replace(/<(?:td|th)[^>]*>/i, '')
+        .replace(/<\/(?:td|th)>/i, '')
+        .replace(/<[^>]+>/g, '') // remove inner HTML
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&amp;/gi, '&')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'")
+        .trim();
+      cells.push(`"${text.replace(/"/g, '""')}"`);
+    }
+
+    if (cells.some(c => c !== '""' && c !== '')) {
+      rows.push(cells.join(','));
+    }
+  }
+
+  return rows.join('\n');
+}
+
 // 🌟 Google Sheets Automatic Tab Discovery API Endpoint (Bypasses Browser CORS) 🌟
 app.get('/api/sheets/discover-tabs', async (req, res) => {
   try {
@@ -79,11 +286,11 @@ app.get('/api/sheets/discover-tabs', async (req, res) => {
       }
     }
 
-    // Method 2: Fetch spreadsheet web representations (htmlview, edit, pubhtml) server-side
+    // Method 2: Fetch spreadsheet web representations (htmlview, pubhtml, edit) server-side
     const candidateUrls = [
       `https://docs.google.com/spreadsheets/d/${sheetId}/htmlview`,
-      `https://docs.google.com/spreadsheets/d/${sheetId}/edit?usp=sharing`,
-      `https://docs.google.com/spreadsheets/d/${sheetId}/pubhtml`
+      `https://docs.google.com/spreadsheets/d/${sheetId}/pubhtml`,
+      `https://docs.google.com/spreadsheets/d/${sheetId}/edit?usp=sharing`
     ];
 
     for (const testUrl of candidateUrls) {
@@ -101,32 +308,52 @@ app.get('/api/sheets/discover-tabs', async (req, res) => {
 
         const html = await fetchRes.text();
 
-        // Extract Spreadsheet Title
+        // Extract Spreadsheet Title from <meta property="og:title"> or <title>
         if (!spreadsheetTitle) {
-          const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
-          if (titleMatch && titleMatch[1]) {
-            spreadsheetTitle = titleMatch[1]
-              .replace(/ - Google Sheets/i, '')
-              .replace(/ - جداول بيانات Google/i, '')
-              .replace(/ - Google Drive/i, '')
-              .trim();
+          const ogTitleMatch = html.match(/<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']/i);
+          if (ogTitleMatch && ogTitleMatch[1]) {
+            spreadsheetTitle = ogTitleMatch[1].trim();
+          } else {
+            const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+            if (titleMatch && titleMatch[1]) {
+              spreadsheetTitle = titleMatch[1]
+                .replace(/ - Google Sheets/i, '')
+                .replace(/ - جداول بيانات Google/i, '')
+                .replace(/ - Google Drive/i, '')
+                .trim();
+            }
           }
         }
 
-        // Pattern A: <li id="sheet-button-([0-9]+)"[^>]*><a[^>]*>([^<]+)</a>
+        // Pattern 1 (Google Sheets htmlview - Highest Accuracy): items.push({name: "SheetName", ... gid: "0"});
+        const itemsRegex = /items\.push\((\{[\s\S]*?\})\);/g;
+        let itemMatch: RegExpExecArray | null;
+        while ((itemMatch = itemsRegex.exec(html)) !== null) {
+          const objStr = itemMatch[1];
+          const nameMatch = objStr.match(/name:\s*["']([^"']+)["']/);
+          const gidMatch = objStr.match(/gid:\s*["']?(-?[0-9]+)["']?/);
+          if (nameMatch && gidMatch) {
+            addTab(gidMatch[1], nameMatch[1]);
+          }
+        }
+
+        // If items.push found real tabs, we have the complete list
+        if (discoveredTabs.length > 0) break;
+
+        // Pattern 2: <li id="sheet-button-([0-9]+)"[^>]*><a[^>]*>([^<]+)</a>
         const btnRegex = /<li\s+id="sheet-button-([0-9]+)"[^>]*>[\s\S]*?<a[^>]*>([^<]+)<\/a>/gi;
         let match: RegExpExecArray | null;
         while ((match = btnRegex.exec(html)) !== null) {
           addTab(match[1], match[2]);
         }
 
-        // Pattern B: <a href="[^"]*gid=([0-9]+)[^"]*"[^>]*>([^<]+)<\/a>
+        // Pattern 3: <a href="[^"]*gid=([0-9]+)[^"]*"[^>]*>([^<]+)<\/a>
         const linkRegex = /<a[^>]*href="[^"]*(?:#|[?&])gid=([0-9]+)[^"]*"[^>]*>([^<]+)<\/a>/gi;
         while ((match = linkRegex.exec(html)) !== null) {
           addTab(match[1], match[2]);
         }
 
-        // Pattern C: {"name":"...","id":0} or {"title":"...","sheetId":0}
+        // Pattern 4: {"name":"...","id":0} or {"title":"...","sheetId":0}
         const jsonMatches = html.match(/\{"(?:name|title)":"([^"]+)","(?:id|sheetId)":([0-9]+)[^}]*\}/g);
         if (jsonMatches) {
           jsonMatches.forEach(jm => {
@@ -138,69 +365,10 @@ app.get('/api/sheets/discover-tabs', async (req, res) => {
           });
         }
 
-        // Pattern D: Array pattern in JS model: [null, 0, "SheetName"] or [null, "SheetName", 0]
-        const arrRegex1 = /\[(?:null|true|false),\s*([0-9]+),\s*"([^"\\]{1,100})",/g;
-        while ((match = arrRegex1.exec(html)) !== null) {
-          addTab(match[1], match[2]);
-        }
-
-        const arrRegex2 = /\[(?:null|true|false),\s*"([^"\\]{1,100})",\s*([0-9]+),/g;
-        while ((match = arrRegex2.exec(html)) !== null) {
-          addTab(match[2], match[1]);
-        }
-
-        // Pattern E: DOCS_timing or bootstrapData
-        const modelChunkRegex = /\[(?:null|true|false|\d+),\s*"([^"\\]{1,80})",\s*([0-9]{1,12})\s*\]/g;
-        while ((match = modelChunkRegex.exec(html)) !== null) {
-          addTab(match[2], match[1]);
-        }
-
-        if (discoveredTabs.length > 1) break;
+        if (discoveredTabs.length > 0) break;
       } catch (fetchErr) {
         console.warn(`Fetch error for ${testUrl}:`, fetchErr);
       }
-    }
-
-    // Method 3: Parallel GViz Tab Name Prober (Tests common Arabic & English worksheet names)
-    if (discoveredTabs.length < 2) {
-      const probeTabNames = [
-        'Sheet1', 'Sheet2', 'Sheet3', 'Sheet4', 'Sheet5', 'Sheet6', 'Sheet7', 'Sheet8',
-        'الورقة 1', 'الورقة 2', 'الورقة 3', 'الورقة 4', 'الورقة 5', 'الورقة 6',
-        'ورقة 1', 'ورقة 2', 'ورقة 3', 'ورقة1', 'ورقة2', 'ورقة3',
-        'Form Responses 1', 'Form Responses 2', 'Form Responses 3',
-        'ردود النموذج 1', 'ردود النموذج 2', 'استجابات النموذج 1', 'استجابات النموذج 2',
-        'الاستجابات', 'الردود', 'استجابات النموذج', 'ردود النموذج',
-        'Data', 'البيانات', 'Cases', 'القضايا', 'Clients', 'العملاء', 'Tasks', 'المهمات',
-        'Summary', 'الملخص', 'Archive', 'الأرشيف', 'Main', 'الرئيسية'
-      ];
-
-      const probePromises = probeTabNames.map(async (name, idx) => {
-        try {
-          const gvizUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(name)}`;
-          const gvizRes = await fetch(gvizUrl);
-          if (gvizRes.ok) {
-            const gvizText = await gvizRes.text();
-            if (gvizText.includes('google.visualization.Query.setResponse')) {
-              const jsonMatch = gvizText.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);?/);
-              if (jsonMatch && jsonMatch[1]) {
-                const data = JSON.parse(jsonMatch[1]);
-                if (data.status === 'ok' && data.table) {
-                  const rowCount = data.table.rows?.length || 0;
-                  return { name, gid: String(idx), rowCount };
-                }
-              }
-            }
-          }
-        } catch (_) {}
-        return null;
-      });
-
-      const probeResults = await Promise.all(probePromises);
-      probeResults.filter(Boolean).forEach((res) => {
-        if (res) {
-          addTab(res.gid, res.name, res.rowCount);
-        }
-      });
     }
 
     // Default tab if still empty

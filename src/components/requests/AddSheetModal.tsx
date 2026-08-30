@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   FileSpreadsheet, 
   X, 
@@ -9,6 +9,7 @@ import {
   Sparkles,
   ClipboardList
 } from 'lucide-react';
+import { useModalLifecycle } from '../../hooks/useModalLifecycle';
 import { useTheme } from '../../lib/theme';
 import { 
   extractSheetInfo, 
@@ -17,6 +18,7 @@ import {
   parseRawTableText,
   SheetWorksheetTab,
   SheetColumn,
+  SheetRowItem,
   SavedPublicSheet
 } from '../../lib/googleSheetsReader';
 
@@ -41,15 +43,75 @@ export const AddSheetModal: React.FC<AddSheetModalProps> = ({
   const [formCategory, setFormCategory] = useState('استقبال طلبات وبلاغات');
   const [formTargetModule, setFormTargetModule] = useState<'cases' | 'clients' | 'financials' | 'consultations' | 'requests' | 'general'>('cases');
   const [formGid, setFormGid] = useState('0');
+  const [activeTabName, setActiveTabName] = useState('الورقة 1');
   const [pastedData, setPastedData] = useState('');
   const [isTestingUrl, setIsTestingUrl] = useState(false);
   const [discoveredTabs, setDiscoveredTabs] = useState<SheetWorksheetTab[]>([]);
+  const [cachedResult, setCachedResult] = useState<{ columns: SheetColumn[]; rows: SheetRowItem[]; totalRows: number } | null>(null);
   const [testResult, setTestResult] = useState<{
     success: boolean;
     message: string;
     rowCount?: number;
     columns?: SheetColumn[];
   } | null>(null);
+
+  const { handleSafeClose, handleBackdropClick } = useModalLifecycle({
+    isOpen,
+    onClose,
+    id: 'add-sheet-modal',
+    isSubmitting: isTestingUrl,
+  });
+
+  // 🌟 Automatic Live Sheet Discovery & Data Fetching upon pasting URL 🌟
+  useEffect(() => {
+    if (!isOpen || !formUrl || importMode !== 'url') return;
+    const { sheetId, gid } = extractSheetInfo(formUrl);
+    if (!sheetId || sheetId.length < 15) return;
+
+    const timer = setTimeout(async () => {
+      setIsTestingUrl(true);
+      try {
+        const targetGid = gid || formGid || '0';
+        const meta = await discoverSpreadsheetMetadata(formUrl).catch(() => ({ sheetId, title: '', tabs: [] }));
+        
+        let tabs = meta.tabs && meta.tabs.length > 0 ? meta.tabs : [];
+        if (tabs.length > 0) {
+          setDiscoveredTabs(tabs);
+        }
+
+        const currentTabObj = tabs.find(t => t.gid === targetGid) || tabs[0];
+        const chosenGid = currentTabObj?.gid || targetGid;
+        const chosenName = currentTabObj?.name || 'الورقة 1';
+
+        setFormGid(chosenGid);
+        setActiveTabName(chosenName);
+
+        if (!formTitle.trim() && meta.title && meta.title !== 'Google Spreadsheet') {
+          setFormTitle(meta.title);
+        }
+
+        const res = await fetchPublicGoogleSheet(formUrl, chosenGid, chosenName);
+        setCachedResult({
+          columns: res.columns,
+          rows: res.rows,
+          totalRows: res.totalRows
+        });
+
+        setTestResult({
+          success: true,
+          message: `✓ تم التحقق بنجاح من ورقة "${chosenName}"! (${res.totalRows} صف، ${res.columns.length} عمود، ${tabs.length || 1} ورقة عمل مكتشفة).`,
+          rowCount: res.totalRows,
+          columns: res.columns
+        });
+      } catch (err: any) {
+        console.warn('Auto test notice:', err);
+      } finally {
+        setIsTestingUrl(false);
+      }
+    }, 450);
+
+    return () => clearTimeout(timer);
+  }, [formUrl, importMode, isOpen]);
 
   if (!isOpen) return null;
 
@@ -60,19 +122,32 @@ export const AddSheetModal: React.FC<AddSheetModalProps> = ({
 
     try {
       const meta = await discoverSpreadsheetMetadata(formUrl);
-      const res = await fetchPublicGoogleSheet(formUrl, formGid);
-
       const tabs = meta.tabs && meta.tabs.length > 0 ? meta.tabs : [];
       setDiscoveredTabs(tabs);
 
+      const targetTab = tabs.find(t => t.gid === formGid) || tabs[0];
+      const selectedGid = targetTab?.gid || formGid || '0';
+      const selectedName = targetTab?.name || activeTabName || 'الورقة 1';
+
+      setFormGid(selectedGid);
+      setActiveTabName(selectedName);
+
+      const res = await fetchPublicGoogleSheet(formUrl, selectedGid, selectedName);
+
+      setCachedResult({
+        columns: res.columns,
+        rows: res.rows,
+        totalRows: res.totalRows
+      });
+
       setTestResult({
         success: true,
-        message: `✓ تم التحقق بنجاح! تم استخراج ${res.totalRows} صف و ${res.columns.length} أعمدة، والتعرف على ${tabs.length || 1} أوراق عمل.`,
+        message: `✓ تم التحقق بنجاح! تم استخراج ${res.totalRows} صف و ${res.columns.length} أعمدة، والتعرف على ${tabs.length || 1} ورقة عمل.`,
         rowCount: res.totalRows,
         columns: res.columns
       });
 
-      if (!formTitle.trim() && meta.title) {
+      if (!formTitle.trim() && meta.title && meta.title !== 'Google Spreadsheet') {
         setFormTitle(meta.title);
       }
     } catch (e: any) {
@@ -85,7 +160,34 @@ export const AddSheetModal: React.FC<AddSheetModalProps> = ({
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSelectTab = async (tab: SheetWorksheetTab) => {
+    setFormGid(tab.gid);
+    setActiveTabName(tab.name);
+    setIsTestingUrl(true);
+    try {
+      const res = await fetchPublicGoogleSheet(formUrl, tab.gid, tab.name);
+      setCachedResult({
+        columns: res.columns,
+        rows: res.rows,
+        totalRows: res.totalRows
+      });
+      setTestResult({
+        success: true,
+        message: `✓ تم التبديل إلى ورقة "${tab.name}" بنجاح (${res.totalRows} صف، ${res.columns.length} عمود).`,
+        rowCount: res.totalRows,
+        columns: res.columns
+      });
+    } catch (err: any) {
+      setTestResult({
+        success: false,
+        message: `✕ تعذر تحميل ورقة "${tab.name}": ${err.message || err}`
+      });
+    } finally {
+      setIsTestingUrl(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (importMode === 'paste') {
@@ -125,32 +227,64 @@ export const AddSheetModal: React.FC<AddSheetModalProps> = ({
       return;
     }
 
+    let finalColumns = cachedResult?.columns || testResult?.columns || [];
+    let finalRows = cachedResult?.rows || [];
+    let finalTotalRows = cachedResult?.totalRows || testResult?.rowCount || 0;
+    let initialSyncStatus: 'idle' | 'success' | 'syncing' = finalRows.length > 0 ? 'success' : 'idle';
+
+    if (finalRows.length === 0) {
+      try {
+        const res = await fetchPublicGoogleSheet(formUrl, formGid || '0', activeTabName);
+        finalColumns = res.columns;
+        finalRows = res.rows;
+        finalTotalRows = res.totalRows;
+        initialSyncStatus = 'success';
+      } catch (fetchErr) {
+        console.warn('Direct fetch note:', fetchErr);
+      }
+    }
+
+    const currentGid = formGid || info.gid || '0';
+    const finalTabs = discoveredTabs.length > 0 
+      ? discoveredTabs 
+      : [{ gid: currentGid, name: activeTabName || 'استجابات النموذج 1', isDefault: true }];
+
     const newSheet: SavedPublicSheet = {
       id: `sheet_${info.sheetId}_${Date.now()}`,
       title: formTitle.trim() || 'استجابات Google Sheet',
       description: formDescription.trim(),
       url: info.cleanUrl,
       sheetId: info.sheetId,
-      gid: formGid || info.gid || '0',
+      gid: currentGid,
+      activeTabName: activeTabName || (finalTabs.find(t => t.gid === currentGid)?.name) || 'الورقة 1',
       category: formCategory,
       targetModule: formTargetModule,
       createdAt: new Date().toISOString(),
-      syncStatus: 'idle',
-      columns: testResult?.columns || [],
-      rows: [],
-      totalRows: testResult?.rowCount || 0,
-      tabs: discoveredTabs.length > 0 ? discoveredTabs : [{ gid: formGid || '0', name: 'استجابات النموذج 1', isDefault: true }]
+      lastSyncedAt: initialSyncStatus === 'success' ? new Date().toISOString() : undefined,
+      syncStatus: initialSyncStatus,
+      columns: finalColumns,
+      rows: finalRows,
+      totalRows: finalTotalRows,
+      tabs: finalTabs
     };
 
     onSaveSheet(newSheet);
-    onClose();
+    handleSafeClose();
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className={`w-full max-w-xl rounded-2xl border p-6 shadow-2xl space-y-5 animate-fade-in ${
-        isDark ? 'bg-[#18181B] border-[#27272A] text-white' : 'bg-white border-slate-200 text-slate-900'
-      }`}>
+    <div 
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 overflow-y-auto"
+      onClick={handleBackdropClick}
+    >
+      <div 
+        onClick={(e) => e.stopPropagation()}
+        className={`w-full max-w-xl max-h-[88vh] overflow-y-auto my-auto rounded-2xl border p-5 sm:p-6 shadow-2xl space-y-5 animate-in fade-in zoom-in-95 duration-150 ${
+          isDark ? 'bg-[#18181B] border-[#27272A] text-white' : 'bg-white border-slate-200 text-slate-900'
+        }`}
+      >
         
         {/* Modal Header */}
         <div className={`flex items-center justify-between pb-3 border-b ${
@@ -166,7 +300,8 @@ export const AddSheetModal: React.FC<AddSheetModalProps> = ({
             </div>
           </div>
           <button 
-            onClick={onClose} 
+            type="button"
+            onClick={handleSafeClose} 
             className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
               isDark ? 'text-zinc-400 hover:text-white hover:bg-zinc-800' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'
             }`}
@@ -260,21 +395,38 @@ export const AddSheetModal: React.FC<AddSheetModalProps> = ({
                 <div className={`p-3 rounded-xl border space-y-2 ${
                   isDark ? 'bg-zinc-900/60 border-zinc-800' : 'bg-slate-50 border-slate-200'
                 }`}>
-                  <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-500">
-                    <Layers className="w-3.5 h-3.5" />
-                    <span>أوراق العمل المكتشفة تلقائياً ({discoveredTabs.length}):</span>
+                  <div className="flex items-center justify-between text-xs font-bold">
+                    <span className="flex items-center gap-1.5 text-indigo-500">
+                      <Layers className="w-3.5 h-3.5" />
+                      <span>أوراق العمل المكتشفة ({discoveredTabs.length}):</span>
+                    </span>
+                    <span className={`text-[11px] font-normal ${isDark ? 'text-zinc-400' : 'text-slate-500'}`}>
+                      انقر على أي ورقة لتحديدها ومعاينتها
+                    </span>
                   </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {discoveredTabs.map(tab => (
-                      <span 
-                        key={tab.gid} 
-                        className={`text-[11px] font-semibold px-2 py-0.5 rounded-lg border ${
-                          isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-200' : 'bg-white border-slate-200 text-slate-700'
-                        }`}
-                      >
-                        {tab.name}
-                      </span>
-                    ))}
+                  <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto p-0.5">
+                    {discoveredTabs.map(tab => {
+                      const isSelected = formGid === tab.gid;
+                      return (
+                        <button
+                          key={tab.gid}
+                          type="button"
+                          onClick={() => handleSelectTab(tab)}
+                          className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg border transition-all cursor-pointer flex items-center gap-1 ${
+                            isSelected
+                              ? 'bg-indigo-600 border-indigo-500 text-white shadow-xs'
+                              : isDark
+                                ? 'bg-zinc-800/80 border-zinc-700/80 text-zinc-300 hover:bg-zinc-700 hover:text-white'
+                                : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100 hover:text-slate-900'
+                          }`}
+                        >
+                          <span>{tab.name}</span>
+                          <span className={`text-[9px] opacity-70 ${isSelected ? 'text-indigo-200' : ''}`}>
+                            (gid:{tab.gid})
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}

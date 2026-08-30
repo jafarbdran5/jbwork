@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { AlertTriangle, Trash2, ShieldAlert, CheckCircle2, X } from 'lucide-react';
 import { DependencyCheckResult } from '../../lib/customizationStore';
+import { useModalLifecycle } from '../../hooks/useModalLifecycle';
 
 interface DependencyDeleteModalProps {
   isOpen: boolean;
@@ -24,16 +25,29 @@ export const DependencyDeleteModal: React.FC<DependencyDeleteModalProps> = ({
   const [deleteMode, setDeleteMode] = useState<'item_only' | 'cascade'>('item_only');
   const [confirmInput, setConfirmInput] = useState('');
 
+  const { handleSafeClose, handleBackdropClick } = useModalLifecycle({
+    isOpen,
+    onClose,
+    id: 'dependency-delete-modal',
+    isSubmitting: isDeleting,
+  });
+
   if (!isOpen) return null;
 
   const requiresTypingConfirm = dependencyCheck.hasDependencies && deleteMode === 'cascade' && dependencyCheck.totalCount > 3;
   const isConfirmDisabled = requiresTypingConfirm && confirmInput.trim() !== 'حذف شامل';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-xs animate-in fade-in duration-200">
+    <div 
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-xs animate-in fade-in duration-200"
+      onClick={handleBackdropClick}
+    >
       <div 
         id="modal-dependency-delete"
-        className="w-full max-w-lg bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-lg bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden flex flex-col animate-in zoom-in-95 duration-150"
         dir="rtl"
       >
         {/* Header */}
@@ -48,8 +62,9 @@ export const DependencyDeleteModal: React.FC<DependencyDeleteModalProps> = ({
             </div>
           </div>
           <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+            type="button"
+            onClick={handleSafeClose}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>

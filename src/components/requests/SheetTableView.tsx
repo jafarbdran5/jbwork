@@ -104,19 +104,23 @@ export const SheetTableView: React.FC<SheetTableViewProps> = ({
               return (
                 <tr
                   key={row._rowId || rIdx}
-                  className={`transition-colors ${
-                    isDark ? 'hover:bg-zinc-800/40' : 'hover:bg-slate-50/80'
-                  } ${row._linkedCaseId ? (isDark ? 'bg-emerald-950/10' : 'bg-emerald-50/40') : ''}`}
+                  onClick={() => onInspectRow(row)}
+                  title="انقر على هذا الصف لعرض تفاصيل ومعلومات القضية كاملة فوراً"
+                  className={`transition-all cursor-pointer group select-none ${
+                    isDark 
+                      ? 'hover:bg-zinc-800/70 active:bg-zinc-800' 
+                      : 'hover:bg-indigo-50/70 active:bg-indigo-100/50'
+                  } ${row._linkedCaseId ? (isDark ? 'bg-emerald-950/15' : 'bg-emerald-50/40') : ''}`}
                 >
                   {/* Row Number */}
-                  <td className={`p-3 font-mono text-[11px] ${isDark ? 'text-zinc-500' : 'text-slate-400'}`}>
+                  <td className={`p-3 font-mono text-[11px] ${isDark ? 'text-zinc-500 group-hover:text-indigo-400' : 'text-slate-400 group-hover:text-indigo-600'}`}>
                     {rowNum}
                   </td>
 
                   {/* System Status Badges */}
                   <td className="p-3 whitespace-nowrap">
                     {row._linkedCaseNumber ? (
-                      <span className="inline-flex items-center gap-1 text-[11px] font-mono font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 px-2 py-0.5 rounded-md">
+                      <span className="inline-flex items-center gap-1 text-[11px] font-mono font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 px-2 py-0.5 rounded-md shadow-xs">
                         <CheckCircle2 className="w-3 h-3" />
                         <span>قضية {row._linkedCaseNumber}</span>
                       </span>
@@ -132,10 +136,10 @@ export const SheetTableView: React.FC<SheetTableViewProps> = ({
                       </span>
                     ) : (
                       <span className={`inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-md ${
-                        isDark ? 'bg-zinc-800 text-zinc-400' : 'bg-slate-100 text-slate-600'
+                        isDark ? 'bg-zinc-800 text-zinc-400 group-hover:bg-zinc-700' : 'bg-slate-100 text-slate-600 group-hover:bg-slate-200'
                       }`}>
                         <Clock className="w-3 h-3" />
-                        <span>جديد / غير معالج</span>
+                        <span>استجابة واردة</span>
                       </span>
                     )}
                   </td>
@@ -154,7 +158,8 @@ export const SheetTableView: React.FC<SheetTableViewProps> = ({
                         {analyzed.isPhone ? (
                           <a
                             href={`tel:${strVal}`}
-                            className="text-indigo-500 hover:underline flex items-center gap-1 font-mono font-medium"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-indigo-500 hover:underline inline-flex items-center gap-1 font-mono font-medium"
                           >
                             <Phone className="w-3 h-3" />
                             <span>{strVal}</span>
@@ -162,15 +167,20 @@ export const SheetTableView: React.FC<SheetTableViewProps> = ({
                         ) : analyzed.isEmail ? (
                           <a
                             href={`mailto:${strVal}`}
-                            className="text-indigo-500 hover:underline flex items-center gap-1"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-indigo-500 hover:underline inline-flex items-center gap-1"
                           >
                             <Mail className="w-3 h-3" />
                             <span className="truncate">{strVal}</span>
                           </a>
                         ) : analyzed.isDrive ? (
                           <button
-                            onClick={() => onPreviewFile({ url: strVal, title: col.label })}
-                            className="text-emerald-500 hover:underline flex items-center gap-1 cursor-pointer font-bold"
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onPreviewFile({ url: strVal, title: col.label });
+                            }}
+                            className="text-emerald-500 hover:underline inline-flex items-center gap-1 cursor-pointer font-bold"
                           >
                             <Eye className="w-3 h-3" />
                             <span>معاينة المستند</span>
@@ -184,11 +194,15 @@ export const SheetTableView: React.FC<SheetTableViewProps> = ({
 
                   {/* Attachments & URLs */}
                   <td className="p-3 text-center whitespace-nowrap">
-                    <div className="flex items-center justify-center gap-1.5">
+                    <div className="flex items-center justify-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                       {rowInfo.fileLinks.length > 0 && (
                         <button
-                          onClick={() => onPreviewFile({ url: rowInfo.fileLinks[0], title: 'مرفق النموذج' })}
-                          className="p-1 rounded-lg bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 text-xs flex items-center gap-1 px-2 cursor-pointer font-bold transition-colors"
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onPreviewFile({ url: rowInfo.fileLinks[0], title: 'مرفق النموذج' });
+                          }}
+                          className="p-1 rounded-lg bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 text-xs inline-flex items-center gap-1 px-2 cursor-pointer font-bold transition-colors"
                           title="معاينة المستند المرفق من Drive"
                         >
                           <Eye className="w-3 h-3" />
@@ -198,7 +212,11 @@ export const SheetTableView: React.FC<SheetTableViewProps> = ({
 
                       {rowInfo.allUrls.length > 0 && (
                         <button
-                          onClick={() => onCopy(rowInfo.allUrls[0], `url_${rIdx}`)}
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onCopy(rowInfo.allUrls[0], `url_${rIdx}`);
+                          }}
                           className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
                             isDark ? 'bg-zinc-800 text-zinc-400 hover:text-white' : 'bg-slate-100 text-slate-600 hover:text-slate-900'
                           }`}
@@ -212,13 +230,17 @@ export const SheetTableView: React.FC<SheetTableViewProps> = ({
 
                   {/* Row Quick Actions */}
                   <td className="p-3 text-center whitespace-nowrap">
-                    <div className="flex items-center justify-center gap-1.5">
+                    <div className="flex items-center justify-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                       
                       {/* Convert to Case */}
                       <button
-                        onClick={() => onCreateCase(row)}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onCreateCase(row);
+                        }}
                         disabled={isConvertingAction}
-                        className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1 cursor-pointer transition-all shadow-xs"
+                        className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs inline-flex items-center gap-1 cursor-pointer transition-all shadow-xs"
                         title="تحويل هذه الاستجابة إلى ملف قضية جديد فوراً"
                       >
                         <FolderPlus className="w-3.5 h-3.5" />
@@ -227,7 +249,11 @@ export const SheetTableView: React.FC<SheetTableViewProps> = ({
 
                       {/* Link to Existing Case */}
                       <button
-                        onClick={() => onLinkToCase(row)}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onLinkToCase(row);
+                        }}
                         className={`p-1.5 rounded-lg border text-xs cursor-pointer transition-colors ${
                           isDark 
                             ? 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-800' 
@@ -240,13 +266,17 @@ export const SheetTableView: React.FC<SheetTableViewProps> = ({
 
                       {/* Inspect Row Details */}
                       <button
-                        onClick={() => onInspectRow(row)}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onInspectRow(row);
+                        }}
                         className={`p-1.5 rounded-lg border text-xs cursor-pointer transition-colors ${
                           isDark 
                             ? 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800' 
                             : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200'
                         }`}
-                        title="معاينة تفاصيل الاستجابة كاملة"
+                        title="معاينة تفاصيل الاستجابة ومعلومات القضية"
                       >
                         <Eye className="w-3.5 h-3.5" />
                       </button>

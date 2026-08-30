@@ -10,6 +10,7 @@ import { saveLocalAttachment, saveLocalCase, getLocalCases } from '../../lib/off
 import { detectDuplicateCase, DuplicateMatchResult } from '../../lib/duplicateDetector';
 import { DuplicateAlertModal } from './DuplicateAlertModal';
 import { mergeDataIntoExistingCase } from '../../lib/caseMergeService';
+import { useModalLifecycle } from '../../hooks/useModalLifecycle';
 import { 
   X, 
   Zap, 
@@ -471,9 +472,24 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
     }
   };
 
+  const { handleSafeClose, handleBackdropClick } = useModalLifecycle({
+    isOpen,
+    onClose,
+    id: 'quick-new-case-modal',
+    isSubmitting: loading,
+  });
+
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5 overflow-y-auto">
-      <div className="w-full max-w-2xl bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl shadow-black overflow-hidden ring-1 ring-cyan-500/20 my-auto animate-in fade-in zoom-in-95 duration-150">
+    <div 
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 overflow-y-auto"
+      onClick={handleBackdropClick}
+    >
+      <div 
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl shadow-black ring-1 ring-cyan-500/20 my-auto animate-in fade-in zoom-in-95 duration-150"
+      >
         
         {/* Header */}
         <div className="px-5 py-4 border-b border-slate-800 bg-slate-950/70 flex items-center justify-between">
@@ -494,8 +510,9 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
             </div>
           </div>
           <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+            type="button"
+            onClick={handleSafeClose}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>

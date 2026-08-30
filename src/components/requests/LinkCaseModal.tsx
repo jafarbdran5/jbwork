@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link as LinkIcon, Search, X } from 'lucide-react';
 import { useTheme } from '../../lib/theme';
+import { useModalLifecycle } from '../../hooks/useModalLifecycle';
 import { CaseItem } from '../../types';
 import { SheetRowItem } from '../../lib/googleSheetsReader';
 
@@ -23,6 +24,12 @@ export const LinkCaseModal: React.FC<LinkCaseModalProps> = ({
   const isDark = theme === 'dark';
   const [searchQuery, setSearchQuery] = useState('');
 
+  const { handleSafeClose, handleBackdropClick } = useModalLifecycle({
+    isOpen,
+    onClose,
+    id: 'link-case-modal',
+  });
+
   if (!isOpen || !linkingRow) return null;
 
   const filteredCases = systemCases
@@ -35,10 +42,18 @@ export const LinkCaseModal: React.FC<LinkCaseModalProps> = ({
     .slice(0, 15);
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className={`w-full max-w-lg rounded-2xl border p-6 shadow-2xl space-y-4 animate-fade-in ${
-        isDark ? 'bg-[#18181B] border-[#27272A] text-white' : 'bg-white border-slate-200 text-slate-900'
-      }`}>
+    <div 
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 overflow-y-auto"
+      onClick={handleBackdropClick}
+    >
+      <div 
+        onClick={(e) => e.stopPropagation()}
+        className={`w-full max-w-lg max-h-[88vh] overflow-y-auto my-auto rounded-2xl border p-5 sm:p-6 shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-150 ${
+          isDark ? 'bg-[#18181B] border-[#27272A] text-white' : 'bg-white border-slate-200 text-slate-900'
+        }`}
+      >
         <div className={`flex items-center justify-between pb-3 border-b ${
           isDark ? 'border-zinc-800' : 'border-slate-200'
         }`}>
@@ -49,7 +64,8 @@ export const LinkCaseModal: React.FC<LinkCaseModalProps> = ({
             <h3 className="text-base font-bold">ربط الاستجابة بقضية مسجلة</h3>
           </div>
           <button 
-            onClick={onClose} 
+            type="button"
+            onClick={handleSafeClose} 
             className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
               isDark ? 'text-zinc-400 hover:text-white hover:bg-zinc-800' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'
             }`}

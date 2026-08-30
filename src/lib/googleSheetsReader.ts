@@ -84,18 +84,26 @@ export function extractSheetInfo(inputUrl: string): { sheetId: string | null; gi
     return { sheetId: trimmed, gid: '0', cleanUrl: `https://docs.google.com/spreadsheets/d/${trimmed}/edit` };
   }
 
-  // Standard Google Sheets URL: /spreadsheets/d/{SHEET_ID}/...
-  const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
-  const sheetId = match ? match[1] : null;
-
   // Extract GID if present (#gid=123 or ?gid=123 or &gid=123)
   const gidMatch = trimmed.match(/[#?&]gid=([0-9]+)/);
   const gid = gidMatch ? gidMatch[1] : '0';
 
-  // Published to web format: /spreadsheets/d/e/{PUB_ID}/...
+  // 1. Published to web format: /spreadsheets/d/e/(2PACX-[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+)
   const pubMatch = trimmed.match(/\/spreadsheets\/d\/e\/([a-zA-Z0-9_-]+)/);
-  if (pubMatch) {
+  if (pubMatch && pubMatch[1] !== 'e') {
     return { sheetId: pubMatch[1], gid: gid || '0', cleanUrl: trimmed };
+  }
+
+  // 2. Standard Google Sheets URL: /spreadsheets/d/{SHEET_ID}/... or /spreadsheets/u/0/d/{SHEET_ID}/...
+  const match = trimmed.match(/\/spreadsheets\/(?:u\/[0-9]+\/)?d\/([a-zA-Z0-9_-]+)/);
+  const sheetId = match ? match[1] : null;
+
+  // 3. Google Drive / Google Forms document file format
+  if (!sheetId) {
+    const driveMatch = trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+    if (driveMatch) {
+      return { sheetId: driveMatch[1], gid: gid || '0', cleanUrl: trimmed };
+    }
   }
 
   return { 
@@ -199,53 +207,7 @@ export async function discoverSpreadsheetMetadata(sheetIdOrUrl: string): Promise
     console.warn('OAuth discovery notice:', tokenErr);
   }
 
-  // Strategy 3: Probe Common Tab Names via GViz (Works on all public sheets without CORS issues)
-  const candidateNames = [
-    'Sheet1', 'Sheet2', 'Sheet3', 'Sheet4', 'Sheet5', 'Sheet6', 'Sheet7', 'Sheet8',
-    'الورقة 1', 'الورقة 2', 'الورقة 3', 'الورقة 4', 'الورقة 5', 'الورقة 6',
-    'ورقة 1', 'ورقة 2', 'ورقة 3', 'ورقة1', 'ورقة2', 'ورقة3',
-    'Form Responses 1', 'Form Responses 2', 'Form Responses 3',
-    'ردود النموذج 1', 'ردود النموذج 2', 'استجابات النموذج 1', 'استجابات النموذج 2',
-    'استجابات الفورم', 'الاستجابات', 'الردود', 'استجابات النموذج', 'ردود النموذج',
-    'Data', 'البيانات', 'Cases', 'القضايا', 'Clients', 'العملاء', 'Tasks', 'المهمات',
-    'Summary', 'الملخص', 'Archive', 'الأرشيف', 'Main', 'الرئيسية'
-  ];
-
-  try {
-    const probePromises = candidateNames.map(async (name) => {
-      try {
-        const probeUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(name)}`;
-        const res = await fetch(probeUrl);
-        if (res.ok) {
-          const text = await res.text();
-          if (text.includes('google.visualization.Query.setResponse')) {
-            const match = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);?/);
-            if (match && match[1]) {
-              const parsed = JSON.parse(match[1]);
-              if (parsed.status === 'ok' && parsed.table) {
-                const rowCount = parsed.table.rows?.length || 0;
-                return { name, rowCount };
-              }
-            }
-          }
-        }
-      } catch (e) {
-        // ignore
-      }
-      return null;
-    });
-
-    const probeResults = await Promise.all(probePromises);
-    probeResults.filter(Boolean).forEach((res, idx) => {
-      if (res) {
-        addTab(String(idx), res.name, res.rowCount);
-      }
-    });
-  } catch (probeErr) {
-    console.warn('Probe error:', probeErr);
-  }
-
-  // Strategy 4: Direct Web scraping fallback
+  // Strategy 3: Direct Web scraping fallback (htmlview, pubhtml)
   try {
     const urls = [
       `https://docs.google.com/spreadsheets/d/${sheetId}/htmlview`,
@@ -258,22 +220,51 @@ export async function discoverSpreadsheetMetadata(sheetIdOrUrl: string): Promise
         if (res.ok) {
           const html = await res.text();
           
-          // Sheet Title
+          // Sheet Title from og:title or title tag
           if (!sheetTitle) {
-            const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
-            if (titleMatch && titleMatch[1]) {
-              sheetTitle = titleMatch[1].replace(/ - Google Sheets/i, '').replace(/ - جداول بيانات Google/i, '').trim();
+            const ogTitleMatch = html.match(/<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']/i);
+            if (ogTitleMatch && ogTitleMatch[1]) {
+              sheetTitle = ogTitleMatch[1].trim();
+            } else {
+              const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+              if (titleMatch && titleMatch[1]) {
+                sheetTitle = titleMatch[1]
+                  .replace(/ - Google Sheets/i, '')
+                  .replace(/ - جداول بيانات Google/i, '')
+                  .replace(/ - Google Drive/i, '')
+                  .trim();
+              }
             }
           }
 
-          // Pattern 1: <li id="sheet-button-([0-9]+)"[^>]*><a[^>]*>([^<]+)</a>
+          // Pattern 1 (Google Sheets htmlview): items.push({name: "...", gid: "..."});
+          const itemsRegex = /items\.push\((\{[\s\S]*?\})\);/g;
+          let itemMatch: RegExpExecArray | null;
+          while ((itemMatch = itemsRegex.exec(html)) !== null) {
+            const objStr = itemMatch[1];
+            const nameMatch = objStr.match(/name:\s*["']([^"']+)["']/);
+            const gidMatch = objStr.match(/gid:\s*["']?(-?[0-9]+)["']?/);
+            if (nameMatch && gidMatch) {
+              addTab(gidMatch[1], nameMatch[1]);
+            }
+          }
+
+          if (discovered.length > 0) break;
+
+          // Pattern 2: <li id="sheet-button-([0-9]+)"[^>]*><a[^>]*>([^<]+)</a>
           const btnRegex = /<li\s+id="sheet-button-([0-9]+)"[^>]*>[\s\S]*?<a[^>]*>([^<]+)<\/a>/gi;
           let match: RegExpExecArray | null;
           while ((match = btnRegex.exec(html)) !== null) {
             addTab(match[1], match[2].trim());
           }
 
-          // Pattern 2: JSON name & id
+          // Pattern 3: <a href="[^"]*gid=([0-9]+)[^"]*"[^>]*>([^<]+)<\/a>
+          const linkRegex = /<a[^>]*href="[^"]*(?:#|[?&])gid=([0-9]+)[^"]*"[^>]*>([^<]+)<\/a>/gi;
+          while ((match = linkRegex.exec(html)) !== null) {
+            addTab(match[1], match[2].trim());
+          }
+
+          // Pattern 4: JSON name & id
           const jsonMatches = html.match(/\{"(?:name|title)":"([^"]+)","(?:id|sheetId)":([0-9]+)[^}]*\}/g);
           if (jsonMatches) {
             jsonMatches.forEach(jm => {
@@ -477,9 +468,9 @@ export async function fetchPublicGoogleSheet(
     throw new Error('رابط Google Sheet غير صالح أو لم يتم العثور على المعرف');
   }
 
-  // Strategy 1: Google Visualization API (GViz JSON)
+  // Strategy 1: Google Visualization API (GViz JSON + Resilient Proxy)
   try {
-    const gvizResult = await fetchViaGViz(sheetId, activeGid, sheetName);
+    const gvizResult = await fetchViaGViz(sheetId, activeGid, sheetName, urlOrId);
     if (gvizResult.rows.length > 0 || gvizResult.columns.length > 0) {
       return {
         ...gvizResult,
@@ -493,7 +484,7 @@ export async function fetchPublicGoogleSheet(
 
   // Strategy 2: Direct CSV Export URL
   try {
-    const csvResult = await fetchViaCSV(sheetId, activeGid);
+    const csvResult = await fetchViaCSV(sheetId, activeGid, urlOrId);
     if (csvResult.rows.length > 0 || csvResult.columns.length > 0) {
       return {
         ...csvResult,
@@ -507,7 +498,7 @@ export async function fetchPublicGoogleSheet(
 
   // Strategy 3: TSV Export URL
   try {
-    const tsvResult = await fetchViaTSV(sheetId, activeGid);
+    const tsvResult = await fetchViaTSV(sheetId, activeGid, urlOrId);
     if (tsvResult.rows.length > 0 || tsvResult.columns.length > 0) {
       return {
         ...tsvResult,
@@ -525,30 +516,46 @@ export async function fetchPublicGoogleSheet(
 }
 
 /**
- * Strategy 1 Implementation: Google Visualization API
+ * Strategy 1 Implementation: Google Visualization API (With Server Proxy + Direct Fallback)
  */
-async function fetchViaGViz(sheetId: string, gid: string, sheetName?: string): Promise<{
+async function fetchViaGViz(sheetId: string, gid: string, sheetName?: string, originalUrl?: string): Promise<{
   columns: SheetColumn[];
   rows: SheetRowItem[];
   totalRows: number;
   sheetTitle?: string;
 }> {
-  let gvizUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json`;
-  if (sheetName) {
-    gvizUrl += `&sheet=${encodeURIComponent(sheetName)}`;
-  } else {
-    gvizUrl += `&gid=${gid}`;
+  let rawText = '';
+  
+  // Try 1: Server proxy first (bypasses browser CORS completely)
+  try {
+    const proxyUrl = `/api/sheets/fetch-data?sheetId=${encodeURIComponent(sheetId)}&gid=${encodeURIComponent(gid)}&format=gviz${sheetName ? `&sheetName=${encodeURIComponent(sheetName)}` : ''}${originalUrl ? `&url=${encodeURIComponent(originalUrl)}` : ''}`;
+    const proxyRes = await fetch(proxyUrl);
+    if (proxyRes.ok) {
+      rawText = await proxyRes.text();
+    }
+  } catch (proxyErr) {
+    console.warn('GViz server proxy notice:', proxyErr);
   }
 
-  const response = await fetch(gvizUrl, {
-    headers: { 'Accept': 'application/json, text/plain, */*' }
-  });
+  // Try 2: Direct Google fetch if proxy didn't get it
+  if (!rawText) {
+    let gvizUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json`;
+    if (sheetName) {
+      gvizUrl += `&sheet=${encodeURIComponent(sheetName)}`;
+    } else {
+      gvizUrl += `&gid=${gid}`;
+    }
 
-  if (!response.ok) {
-    throw new Error(`GViz error status: ${response.status}`);
+    const response = await fetch(gvizUrl, {
+      headers: { 'Accept': 'application/json, text/plain, */*' }
+    });
+
+    if (!response.ok) {
+      throw new Error(`GViz error status: ${response.status}`);
+    }
+
+    rawText = await response.text();
   }
-
-  const rawText = await response.text();
 
   if (rawText.includes('<!DOCTYPE html>') || rawText.includes('ServiceLogin') || rawText.includes('accounts.google.com')) {
     throw new Error('هذا الشيت مقفل أو يتطلب صلاحيات خاصة (يرجى جعله متاحاً لأي شخص لديه الرابط).');
@@ -556,6 +563,10 @@ async function fetchViaGViz(sheetId: string, gid: string, sheetName?: string): P
 
   const jsonMatch = rawText.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);?/);
   if (!jsonMatch || !jsonMatch[1]) {
+    // If the proxy returned CSV directly instead of GViz envelope, parse as CSV
+    if (rawText.includes(',') || rawText.includes('\t') || rawText.includes('\n')) {
+      return parseRawTableText(rawText, sheetId, gid);
+    }
     throw new Error('No GViz JSON envelope found');
   }
 
@@ -677,21 +688,34 @@ async function fetchViaGViz(sheetId: string, gid: string, sheetName?: string): P
 }
 
 /**
- * Strategy 2 Implementation: CSV Export
+ * Strategy 2 Implementation: CSV Export (With Server Proxy + Direct Fallback)
  */
-async function fetchViaCSV(sheetId: string, gid: string): Promise<{
+async function fetchViaCSV(sheetId: string, gid: string, originalUrl?: string): Promise<{
   columns: SheetColumn[];
   rows: SheetRowItem[];
   totalRows: number;
 }> {
-  const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
-  const response = await fetch(csvUrl);
+  let csvText = '';
 
-  if (!response.ok) {
-    throw new Error(`CSV Export failed (HTTP ${response.status})`);
+  try {
+    const proxyUrl = `/api/sheets/fetch-data?sheetId=${encodeURIComponent(sheetId)}&gid=${encodeURIComponent(gid)}&format=csv${originalUrl ? `&url=${encodeURIComponent(originalUrl)}` : ''}`;
+    const proxyRes = await fetch(proxyUrl);
+    if (proxyRes.ok) {
+      csvText = await proxyRes.text();
+    }
+  } catch (proxyErr) {
+    console.warn('CSV server proxy notice:', proxyErr);
   }
 
-  const csvText = await response.text();
+  if (!csvText) {
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
+    const response = await fetch(csvUrl);
+    if (!response.ok) {
+      throw new Error(`CSV Export failed (HTTP ${response.status})`);
+    }
+    csvText = await response.text();
+  }
+
   if (csvText.includes('<!DOCTYPE html>') || csvText.includes('ServiceLogin')) {
     throw new Error('يتطلب تسجيل دخول Google.');
   }
@@ -700,21 +724,34 @@ async function fetchViaCSV(sheetId: string, gid: string): Promise<{
 }
 
 /**
- * Strategy 3 Implementation: TSV Export
+ * Strategy 3 Implementation: TSV Export (With Server Proxy + Direct Fallback)
  */
-async function fetchViaTSV(sheetId: string, gid: string): Promise<{
+async function fetchViaTSV(sheetId: string, gid: string, originalUrl?: string): Promise<{
   columns: SheetColumn[];
   rows: SheetRowItem[];
   totalRows: number;
 }> {
-  const tsvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=tsv&gid=${gid}`;
-  const response = await fetch(tsvUrl);
+  let tsvText = '';
 
-  if (!response.ok) {
-    throw new Error(`TSV Export failed (HTTP ${response.status})`);
+  try {
+    const proxyUrl = `/api/sheets/fetch-data?sheetId=${encodeURIComponent(sheetId)}&gid=${encodeURIComponent(gid)}&format=tsv${originalUrl ? `&url=${encodeURIComponent(originalUrl)}` : ''}`;
+    const proxyRes = await fetch(proxyUrl);
+    if (proxyRes.ok) {
+      tsvText = await proxyRes.text();
+    }
+  } catch (proxyErr) {
+    console.warn('TSV server proxy notice:', proxyErr);
   }
 
-  const tsvText = await response.text();
+  if (!tsvText) {
+    const tsvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=tsv&gid=${gid}`;
+    const response = await fetch(tsvUrl);
+    if (!response.ok) {
+      throw new Error(`TSV Export failed (HTTP ${response.status})`);
+    }
+    tsvText = await response.text();
+  }
+
   if (tsvText.includes('<!DOCTYPE html>') || tsvText.includes('ServiceLogin')) {
     throw new Error('يتطلب تسجيل دخول Google.');
   }

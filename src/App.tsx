@@ -42,6 +42,7 @@ import { getAppLabel, getAppLabelEn } from './lib/dynamicLabelsStore';
 import { JbAiAssistantModal } from './components/ai/JbAiAssistantModal';
 import { ChangePasswordModal } from './components/auth/ChangePasswordModal';
 import { AuthScreen } from './components/auth/AuthScreen';
+import { useModalLifecycle } from './hooks/useModalLifecycle';
 
 import {
   LayoutDashboard,
@@ -113,6 +114,18 @@ function MainAppShell() {
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState<boolean>(false);
   const [drawerSearchQuery, setDrawerSearchQuery] = useState<string>('');
 
+  const { handleSafeClose: handleCloseFabSheet, handleBackdropClick: handleFabBackdropClick } = useModalLifecycle({
+    isOpen: isFabSheetOpen,
+    onClose: () => setIsFabSheetOpen(false),
+    id: 'app-fab-sheet',
+  });
+
+  const { handleSafeClose: handleCloseDrawer, handleBackdropClick: handleDrawerBackdropClick } = useModalLifecycle({
+    isOpen: isDrawerOpen,
+    onClose: () => setIsDrawerOpen(false),
+    id: 'app-drawer-sheet',
+  });
+
   // Online / Offline monitor
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
 
@@ -123,7 +136,7 @@ function MainAppShell() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
-    // Global keyboard shortcut for Command Palette (Cmd+K or Ctrl+K)
+    // Global keyboard shortcut for Command Palette (Cmd+K or Ctrl+K) & New Case (Cmd+N or Ctrl+N)
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
@@ -132,16 +145,34 @@ function MainAppShell() {
       if ((e.metaKey || e.ctrlKey) && e.key === 'n') {
         e.preventDefault();
         setQuickCaseInitialType(undefined);
+        setQuickCaseInitialData(undefined);
         setIsQuickCaseOpen(true);
       }
     };
 
+    const handleOpenCaseEvent = (e: any) => {
+      const detail = e.detail || {};
+      setQuickCaseInitialType(detail.type || detail.caseType || undefined);
+      if (detail.prefill || detail.data || detail.initialData) {
+        setQuickCaseInitialData(detail.prefill || detail.data || detail.initialData);
+      } else {
+        setQuickCaseInitialData(undefined);
+      }
+      setIsQuickCaseOpen(true);
+      setIsFabSheetOpen(false);
+      setIsDrawerOpen(false);
+    };
+
     window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('jb_open_new_case', handleOpenCaseEvent);
+    window.addEventListener('jb_open_quick_case', handleOpenCaseEvent);
 
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('jb_open_new_case', handleOpenCaseEvent);
+      window.removeEventListener('jb_open_quick_case', handleOpenCaseEvent);
     };
   }, []);
 
@@ -576,10 +607,17 @@ function MainAppShell() {
 
       {/* 📱 ANDROID FAB QUICK ACTION SHEET (Bottom Modal) */}
       {isFabSheetOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex flex-col justify-end">
-          <div className="flex-1" onClick={() => setIsFabSheetOpen(false)} />
+        <div 
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex flex-col justify-end animate-in fade-in duration-150"
+          onClick={handleFabBackdropClick}
+        >
+          <div className="flex-1" onClick={handleCloseFabSheet} />
           
-          <div className={`w-full max-w-lg mx-auto rounded-t-3xl border-t p-5 space-y-4 shadow-2xl transition-colors ${
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className={`w-full max-w-lg mx-auto rounded-t-3xl border-t p-5 space-y-4 shadow-2xl transition-colors animate-in slide-in-from-bottom duration-200 ${
             isDark ? 'bg-[#121214] border-[#27272A]' : 'bg-white border-slate-200'
           }`}>
             {/* Sheet Handle */}
@@ -589,7 +627,11 @@ function MainAppShell() {
               <span className="font-bold text-base">
                 {isRTL ? 'إجراء سريع جديد' : 'Quick Actions'}
               </span>
-              <button onClick={() => setIsFabSheetOpen(false)} className="p-1.5 text-slate-400 hover:text-white cursor-pointer">
+              <button 
+                type="button"
+                onClick={handleCloseFabSheet} 
+                className="p-1.5 text-slate-400 hover:text-white cursor-pointer rounded-lg hover:bg-slate-800/40"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -597,8 +639,10 @@ function MainAppShell() {
             <div className="grid grid-cols-1 gap-2.5">
               <button
                 onClick={() => {
-                  setIsFabSheetOpen(false);
-                  handleOpenQuickCase();
+                  handleCloseFabSheet();
+                  setTimeout(() => {
+                    handleOpenQuickCase();
+                  }, 20);
                 }}
                 className="w-full flex items-center gap-3.5 p-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm cursor-pointer shadow-md shadow-indigo-600/20 active:scale-98 transition-all"
               >
@@ -613,7 +657,7 @@ function MainAppShell() {
 
               <button
                 onClick={() => {
-                  setIsFabSheetOpen(false);
+                  handleCloseFabSheet();
                   handleNavigate('tasks');
                 }}
                 className={`w-full flex items-center gap-3.5 p-3.5 rounded-2xl border font-bold text-sm cursor-pointer active:scale-98 transition-all ${
@@ -631,7 +675,7 @@ function MainAppShell() {
 
               <button
                 onClick={() => {
-                  setIsFabSheetOpen(false);
+                  handleCloseFabSheet();
                   handleNavigate('reminders');
                 }}
                 className={`w-full flex items-center gap-3.5 p-3.5 rounded-2xl border font-bold text-sm cursor-pointer active:scale-98 transition-all ${
@@ -649,7 +693,7 @@ function MainAppShell() {
 
               <button
                 onClick={() => {
-                  setIsFabSheetOpen(false);
+                  handleCloseFabSheet();
                   handleNavigate('life_os');
                 }}
                 className={`w-full flex items-center gap-3.5 p-3.5 rounded-2xl border font-bold text-sm cursor-pointer active:scale-98 transition-all ${
@@ -671,8 +715,15 @@ function MainAppShell() {
 
       {/* 📱 ANDROID APPS DRAWER / ALL MODULES SHEET */}
       {isDrawerOpen && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex">
-          <div className={`w-full max-w-sm sm:max-w-md h-full flex flex-col justify-between overflow-y-auto border-e transition-colors ${
+        <div 
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex animate-in fade-in duration-150"
+          onClick={handleDrawerBackdropClick}
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className={`w-full max-w-sm sm:max-w-md h-full flex flex-col justify-between overflow-y-auto border-e transition-colors animate-in slide-in-from-start duration-200 ${
             isDark ? 'bg-[#09090B] border-[#27272A]' : 'bg-white border-slate-200'
           }`}>
             
@@ -689,7 +740,8 @@ function MainAppShell() {
                   </div>
                 </div>
                 <button 
-                  onClick={() => setIsDrawerOpen(false)} 
+                  type="button"
+                  onClick={handleCloseDrawer} 
                   className="p-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
                 >
                   <X className="w-5 h-5" />
@@ -785,7 +837,7 @@ function MainAppShell() {
               {/* Explicit Sign Out / Logout Button */}
               <button
                 onClick={() => {
-                  setIsDrawerOpen(false);
+                  handleCloseDrawer();
                   signOut();
                 }}
                 className="w-full flex items-center justify-center gap-2.5 py-2.5 px-4 rounded-xl text-xs font-bold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/30 hover:bg-rose-100 dark:hover:bg-rose-900/40 border border-rose-200 dark:border-rose-900/40 cursor-pointer transition-all active:scale-98"
@@ -797,7 +849,7 @@ function MainAppShell() {
 
           </div>
 
-          <div className="flex-1" onClick={() => setIsDrawerOpen(false)} />
+          <div className="flex-1" onClick={handleCloseDrawer} />
         </div>
       )}
 

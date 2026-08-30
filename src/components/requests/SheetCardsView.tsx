@@ -43,11 +43,13 @@ export const SheetCardsView: React.FC<SheetCardsViewProps> = ({
         return (
           <div
             key={row._rowId || rIdx}
-            className={`p-5 rounded-2xl border transition-all flex flex-col justify-between ${
+            onClick={() => onInspectRow(row)}
+            className={`p-5 rounded-2xl border transition-all cursor-pointer select-none flex flex-col justify-between ${
               isDark 
-                ? 'bg-[#18181B] border-[#27272A] hover:border-zinc-700' 
-                : 'bg-white border-slate-200 hover:border-slate-300 shadow-xs'
+                ? 'bg-[#18181B] border-[#27272A] hover:border-indigo-500/50 hover:bg-zinc-800/40' 
+                : 'bg-white border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/20 shadow-xs'
             } ${row._linkedCaseId ? 'ring-1 ring-emerald-500/40' : ''}`}
+            title="انقر لعرض تفاصيل الاستجابة ومعلومات القضية كاملة"
           >
             <div className="space-y-3">
               {/* Card Top Badges */}
@@ -110,9 +112,13 @@ export const SheetCardsView: React.FC<SheetCardsViewProps> = ({
             {/* Action Buttons */}
             <div className={`pt-4 mt-4 border-t flex items-center justify-between gap-2 ${
               isDark ? 'border-zinc-800/80' : 'border-slate-100'
-            }`}>
+            }`} onClick={(e) => e.stopPropagation()}>
               <button
-                onClick={() => onInspectRow(row)}
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onInspectRow(row);
+                }}
                 className={`px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer transition-colors flex items-center gap-1 ${
                   isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300' : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
                 }`}
@@ -121,9 +127,13 @@ export const SheetCardsView: React.FC<SheetCardsViewProps> = ({
                 <span>معاينة</span>
               </button>
 
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                 <button
-                  onClick={() => onLinkToCase(row)}
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onLinkToCase(row);
+                  }}
                   className={`p-1.5 rounded-xl border text-xs cursor-pointer transition-colors ${
                     isDark ? 'border-zinc-700 text-zinc-300 hover:text-white hover:bg-zinc-800' : 'border-slate-200 text-slate-700 hover:bg-slate-100'
                   }`}
@@ -132,7 +142,11 @@ export const SheetCardsView: React.FC<SheetCardsViewProps> = ({
                   <LinkIcon className="w-4 h-4 text-indigo-500" />
                 </button>
                 <button
-                  onClick={() => onCreateCase(row)}
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCreateCase(row);
+                  }}
                   className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
                 >
                   <FolderPlus className="w-3.5 h-3.5" />

@@ -440,7 +440,8 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
 
   // Save Info changes
   const handleSaveInfo = async () => {
-    if (!userProfile || !caseData) return;
+    if (!caseData) return;
+    const currentUser = userProfile || { uid: 'admin', displayName: 'المشرف', email: 'jfrbdran@gmail.com' };
     const updatedCase: CaseItem = {
       ...caseData,
       title: editTitle,
@@ -485,16 +486,19 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
         entityType: 'case',
         caseId,
         entityTitle: editTitle,
-        user: userProfile
+        user: currentUser
       });
     } catch (e) {
       console.warn('Firestore update fallback to local store:', e);
     }
+
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'cases', entityType: 'case', caseId } }));
   };
 
   // Quick Status change from header
   const handleQuickStatusChange = async (newStatus: CaseStatus) => {
-    if (!userProfile || !caseData) return;
+    if (!caseData) return;
+    const currentUser = userProfile || { uid: 'admin', displayName: 'المشرف', email: 'jfrbdran@gmail.com' };
     const updatedCase = { ...caseData, status: newStatus, updatedAt: new Date().toISOString() };
     setCaseData(updatedCase);
     saveLocalCase(updatedCase);
@@ -510,16 +514,19 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
         entityType: 'case',
         caseId,
         entityTitle: caseData.title,
-        user: userProfile
+        user: currentUser
       });
     } catch (e) {
       console.warn('Quick status fallback:', e);
     }
+
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'cases', entityType: 'case', caseId } }));
   };
 
   // Quick Assign Employee from header
   const handleQuickAssign = async (targetUid: string) => {
-    if (!userProfile || !caseData) return;
+    if (!caseData) return;
+    const currentUser = userProfile || { uid: 'admin', displayName: 'المشرف', email: 'jfrbdran@gmail.com' };
     const targetUser = teamMembers.find(u => u.uid === targetUid);
     if (!targetUser) return;
 
@@ -543,11 +550,13 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
         entityType: 'case',
         caseId,
         entityTitle: caseData.title,
-        user: userProfile
+        user: currentUser
       });
     } catch (e) {
       console.warn('Quick assign fallback:', e);
     }
+
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'cases', entityType: 'case', caseId } }));
   };
 
   // Add Task
@@ -1894,15 +1903,21 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
 
           {/* Media Preview Modal if active */}
           {previewMedia && (
-            <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4">
-              <div className="w-full max-w-4xl max-h-[90vh] bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col">
+            <div 
+              className="fixed inset-0 z-50 bg-black/90 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5 overflow-y-auto"
+              onClick={() => setPreviewMedia(null)}
+            >
+              <div 
+                onClick={(e) => e.stopPropagation()}
+                className="w-full max-w-4xl max-h-[90vh] my-auto bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col shadow-2xl animate-fade-in"
+              >
                 <div className="flex items-center justify-between pb-3 border-b border-slate-800 mb-3">
                   <span className="text-xs font-bold text-white truncate">{previewMedia.name}</span>
-                  <button onClick={() => setPreviewMedia(null)} className="text-slate-400 hover:text-white text-xs px-2 py-1 bg-slate-800 rounded">
+                  <button onClick={() => setPreviewMedia(null)} className="text-slate-400 hover:text-white text-xs px-2.5 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg cursor-pointer">
                     {t('close')}
                   </button>
                 </div>
-                <div className="flex-1 overflow-auto flex items-center justify-center bg-black/40 rounded-xl p-2">
+                <div className="flex-1 overflow-auto flex items-center justify-center bg-black/40 rounded-xl p-2 min-h-[300px]">
                   {previewMedia.type === 'image' && (
                     <img src={previewMedia.url} alt={previewMedia.name} className="max-w-full max-h-[70vh] object-contain rounded-lg" />
                   )}

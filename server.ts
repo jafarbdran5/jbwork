@@ -16,6 +16,7 @@ app.get('/api/sheets/fetch-data', async (req, res) => {
     const rawGid = String(req.query.gid || '0').trim();
     const rawSheetName = String(req.query.sheetName || '').trim();
     const format = String(req.query.format || 'gviz').trim(); // 'gviz' | 'csv' | 'tsv'
+    const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '') || String(req.query.token || '');
 
     // Extract sheetId & gid from URL if provided
     let sheetId = rawSheetId;
@@ -34,7 +35,7 @@ app.get('/api/sheets/fetch-data', async (req, res) => {
         }
       }
       // Only fallback to URL gid if rawGid was not explicitly specified
-      if (!gid && gid !== '0') {
+      if (!gid || gid === '0') {
         const gidMatch = rawUrl.match(/[#?&]gid=([0-9]+)/);
         if (gidMatch) {
           gid = gidMatch[1];
@@ -50,17 +51,49 @@ app.get('/api/sheets/fetch-data', async (req, res) => {
       return res.status(400).json({ success: false, message: 'معرف الشيت مطلوب (sheetId is required)' });
     }
 
-    const isPublishedWeb = sheetId.startsWith('2PACX-') || (rawUrl && rawUrl.includes('/d/e/'));
+    // 1. If OAuth Token is present, try Google Sheets API v4 first
+    if (token) {
+      try {
+        const range = rawSheetName ? `'${rawSheetName.replace(/'/g, "''")}'` : (gid === '0' ? 'A1:ZZ5000' : `'${rawSheetName || 'Sheet1'}'!A1:ZZ5000`);
+        const apiUrl = `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(range)}?valueRenderOption=FORMATTED_VALUE`;
+        const apiRes = await fetch(apiUrl, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (apiRes.ok) {
+          const apiData: any = await apiRes.json();
+          const values: any[][] = apiData.values || [];
+          if (values.length > 0) {
+            const csvOutput = values.map(row => 
+              row.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')
+            ).join('\n');
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.setHeader('X-Sheet-Data-Type', 'csv');
+            return res.send(csvOutput);
+          }
+        }
+      } catch (oauthErr) {
+        console.warn('OAuth Sheets API fetch notice:', oauthErr);
+      }
+    }
 
+    const isPublishedWeb = sheetId.startsWith('2PACX-') || (rawUrl && rawUrl.includes('/d/e/'));
     const candidateUrls: { url: string; type: 'gviz' | 'csv' | 'tsv' | 'html' }[] = [];
 
     if (isPublishedWeb) {
+      if (rawSheetName) {
+        candidateUrls.push({
+          url: `https://docs.google.com/spreadsheets/d/e/${sheetId}/pub?output=csv&sheet=${encodeURIComponent(rawSheetName)}&single=true`,
+          type: 'csv'
+        });
+        candidateUrls.push({
+          url: `https://docs.google.com/spreadsheets/d/e/${sheetId}/pub?output=tsv&sheet=${encodeURIComponent(rawSheetName)}&single=true`,
+          type: 'tsv'
+        });
+      }
       candidateUrls.push({
-        url: `https://docs.google.com/spreadsheets/d/e/${sheetId}/pub?output=csv${gid && gid !== '0' ? `&gid=${gid}` : ''}`,
+        url: `https://docs.google.com/spreadsheets/d/e/${sheetId}/pub?output=csv${gid && gid !== '0' ? `&gid=${gid}` : ''}&single=true`,
         type: 'csv'
       });
       candidateUrls.push({
-        url: `https://docs.google.com/spreadsheets/d/e/${sheetId}/pub?output=tsv${gid && gid !== '0' ? `&gid=${gid}` : ''}`,
+        url: `https://docs.google.com/spreadsheets/d/e/${sheetId}/pub?output=tsv${gid && gid !== '0' ? `&gid=${gid}` : ''}&single=true`,
         type: 'tsv'
       });
       candidateUrls.push({
@@ -68,57 +101,70 @@ app.get('/api/sheets/fetch-data', async (req, res) => {
         type: 'html'
       });
     } else {
-      if (format === 'gviz') {
-        // 1. GViz by GID (primary)
+      // 1. Target by Sheet Name (if specified) - try both raw & decoded & URI encoded
+      if (rawSheetName) {
+        // GViz with sheet name parameter
         candidateUrls.push({ 
-          url: `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&gid=${gid}`, 
+          url: `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&tq=&sheet=${encodeURIComponent(rawSheetName)}`, 
           type: 'gviz' 
         });
-
-        // 2. GViz by Sheet Name (if sheet name provided)
-        if (rawSheetName) {
-          candidateUrls.push({ 
-            url: `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(rawSheetName)}`, 
-            type: 'gviz' 
-          });
-        }
-      }
-
-      // CSV Export by GID
-      candidateUrls.push({
-        url: `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`,
-        type: 'csv'
-      });
-
-      // GViz CSV by GID
-      candidateUrls.push({
-        url: `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&gid=${gid}`,
-        type: 'csv'
-      });
-
-      // GViz CSV by sheet name
-      if (rawSheetName) {
+        candidateUrls.push({ 
+          url: `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&tq=&sheet=${encodeURIComponent(rawSheetName)}`, 
+          type: 'csv' 
+        });
+        // Direct export with sheet name
         candidateUrls.push({
-          url: `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(rawSheetName)}`,
+          url: `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&sheet=${encodeURIComponent(rawSheetName)}&id=${sheetId}`,
           type: 'csv'
+        });
+        candidateUrls.push({
+          url: `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=tsv&sheet=${encodeURIComponent(rawSheetName)}&id=${sheetId}`,
+          type: 'tsv'
         });
       }
 
-      // TSV Export
+      // 2. Target by GID
+      candidateUrls.push({ 
+        url: `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&tq=&gid=${gid}`, 
+        type: 'gviz' 
+      });
+
+      // 3. Direct CSV & TSV Export with GID
       candidateUrls.push({
-        url: `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=tsv&gid=${gid}`,
+        url: `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv&tq=&gid=${gid}`,
+        type: 'csv'
+      });
+      candidateUrls.push({
+        url: `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}&id=${sheetId}`,
+        type: 'csv'
+      });
+      candidateUrls.push({
+        url: `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=tsv&gid=${gid}&id=${sheetId}`,
         type: 'tsv'
       });
 
-      // HTML view fallback
+      // 4. HTML view fallback
       candidateUrls.push({
         url: `https://docs.google.com/spreadsheets/d/${sheetId}/htmlview?gid=${gid}`,
         type: 'html'
       });
+      if (rawSheetName) {
+        candidateUrls.push({
+          url: `https://docs.google.com/spreadsheets/d/${sheetId}/htmlview?sheet=${encodeURIComponent(rawSheetName)}`,
+          type: 'html'
+        });
+      }
+      // 5. Default root gviz
+      if (gid !== '0') {
+        candidateUrls.push({
+          url: `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json&tq=`,
+          type: 'gviz'
+        });
+      }
     }
 
     const headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       'Accept': '*/*',
       'Accept-Language': 'ar,en-US,en;q=0.9'
     };
@@ -129,33 +175,45 @@ app.get('/api/sheets/fetch-data', async (req, res) => {
         if (!response.ok) continue;
 
         const content = await response.text();
+        const trimmedContent = (content || '').trim();
 
-        // Check if private login page
-        if (content.includes('<!DOCTYPE html>') && (content.includes('ServiceLogin') || content.includes('accounts.google.com'))) {
+        // 🛑 Reject any Google Login or Auth redirection HTML pages
+        if (
+          trimmedContent.includes('ServiceLogin') || 
+          trimmedContent.includes('accounts.google.com') ||
+          trimmedContent.includes('Sign in - Google Accounts')
+        ) {
           continue;
         }
 
         // GViz check
         if (candidate.type === 'gviz') {
-          if (content.includes('google.visualization.Query.setResponse')) {
+          if (trimmedContent.includes('google.visualization.Query.setResponse')) {
             res.setHeader('Content-Type', 'text/plain; charset=utf-8');
             res.setHeader('X-Sheet-Data-Type', 'gviz');
-            return res.send(content);
+            return res.send(trimmedContent);
           }
         }
 
-        // CSV / TSV check
+        // CSV / TSV check (MUST NOT be an HTML document)
         if (candidate.type === 'csv' || candidate.type === 'tsv') {
-          if (content && !content.includes('<!DOCTYPE html>') && content.trim().length > 0) {
+          const isHtml = 
+            trimmedContent.startsWith('<!doctype html') || 
+            trimmedContent.startsWith('<!DOCTYPE html') || 
+            trimmedContent.startsWith('<html') ||
+            trimmedContent.includes('<head>') ||
+            trimmedContent.includes('<body>');
+
+          if (!isHtml && trimmedContent.length > 0) {
             res.setHeader('Content-Type', 'text/plain; charset=utf-8');
             res.setHeader('X-Sheet-Data-Type', candidate.type);
-            return res.send(content);
+            return res.send(trimmedContent);
           }
         }
 
-        // HTML table parser check
-        if (candidate.type === 'html' && content.includes('<table')) {
-          const parsedCsv = htmlTableToCsv(content);
+        // HTML table parser check (extract actual <table> contents only)
+        if (candidate.type === 'html' && trimmedContent.includes('<table')) {
+          const parsedCsv = htmlTableToCsv(trimmedContent);
           if (parsedCsv && parsedCsv.trim().length > 0) {
             res.setHeader('Content-Type', 'text/plain; charset=utf-8');
             res.setHeader('X-Sheet-Data-Type', 'csv');

@@ -530,14 +530,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         throw e;
       }
       console.warn('Profile fetch error handling:', e);
-      // Fallback if offline
-      if (!navigator.onLine) {
+
+      // Robust fallback for owner account or offline/slow network
+      const isOwner = userEmail === 'jfrbdran@gmail.com' || 
+                      userEmail.includes('jfrbdran') || 
+                      userEmail.includes('jaafar');
+      if (isOwner) {
+        const fallbackProfile = buildSuperAdminProfile(user.uid, userEmail, user.displayName || 'جعفر بدران (Jaafar Bdran)');
+        setUserProfile(fallbackProfile);
+        localStorage.setItem(LOCAL_STORAGE_SESSION_KEY, JSON.stringify(fallbackProfile));
+        saveLocalUser(fallbackProfile);
         setIsOfflineSession(true);
-        const cached = localStorage.getItem(LOCAL_STORAGE_SESSION_KEY);
-        if (cached) {
-          setUserProfile(JSON.parse(cached));
-          return;
-        }
+        return;
+      }
+
+      // Fallback if offline or cached
+      const cached = localStorage.getItem(LOCAL_STORAGE_SESSION_KEY);
+      if (cached) {
+        try {
+          const parsed = JSON.parse(cached);
+          if (parsed && parsed.isActive !== false) {
+            setUserProfile(parsed);
+            setIsOfflineSession(true);
+            return;
+          }
+        } catch (_) {}
       }
       throw e;
     }

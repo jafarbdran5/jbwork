@@ -102,37 +102,51 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({
     window.addEventListener('jb_data_changed', handleDataChanged);
     window.addEventListener('jb_entity_deleted', handleDataChanged);
     window.addEventListener('jb_entity_restored', handleDataChanged);
+    window.addEventListener('jb_entity_purged', handleDataChanged);
 
-    const qCases = query(collection(db, 'cases'));
-    const unsubCases = onSnapshot(qCases, (snap) => {
-      const items = snap.docs
-        .map(d => ({ id: d.id, ...d.data() } as CaseItem))
-        .filter(c => !c.isDeleted && !(c as any)._deleted)
-        .sort((a, b) => {
-          const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-          const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-          return timeB - timeA;
-        });
-      setCases(items);
-      setLoading(false);
-    }, (err) => {
+    let unsubCases = () => {};
+    let unsubReminders = () => {};
+    let unsubEvents = () => {};
+
+    try {
+      const qCases = query(collection(db, 'cases'));
+      unsubCases = onSnapshot(qCases, (snap) => {
+        const items = snap.docs
+          .map(d => ({ id: d.id, ...d.data() } as CaseItem))
+          .filter(c => !c.isDeleted && !(c as any)._deleted)
+          .sort((a, b) => {
+            const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+            const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+            return timeB - timeA;
+          });
+        setCases(items);
+        setLoading(false);
+      }, (err) => {
+        syncLocal();
+        setLoading(false);
+      });
+    } catch (_) {
       syncLocal();
       setLoading(false);
-    });
+    }
 
-    const todayStr = new Date().toISOString().split('T')[0];
-    const qReminders = query(collection(db, 'caseReminders'));
-    const unsubReminders = onSnapshot(qReminders, (snap) => {
-      const items = snap.docs
-        .map(d => ({ id: d.id, ...d.data() } as CaseReminder))
-        .filter(r => r.dueDate === todayStr);
-      setReminders(items);
-    }, (err) => console.warn(err));
+    try {
+      const todayStr = new Date().toISOString().split('T')[0];
+      const qReminders = query(collection(db, 'caseReminders'));
+      unsubReminders = onSnapshot(qReminders, (snap) => {
+        const items = snap.docs
+          .map(d => ({ id: d.id, ...d.data() } as CaseReminder))
+          .filter(r => r.dueDate === todayStr);
+        setReminders(items);
+      }, (err) => console.warn(err));
+    } catch (_) {}
 
-    const qEvents = query(collection(db, 'caseEvents'), orderBy('timestamp', 'desc'), limit(6));
-    const unsubEvents = onSnapshot(qEvents, (snap) => {
-      setRecentEvents(snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseEvent)));
-    }, (err) => console.warn(err));
+    try {
+      const qEvents = query(collection(db, 'caseEvents'), orderBy('timestamp', 'desc'), limit(6));
+      unsubEvents = onSnapshot(qEvents, (snap) => {
+        setRecentEvents(snap.docs.map(d => ({ id: d.id, ...d.data() } as CaseEvent)));
+      }, (err) => console.warn(err));
+    } catch (_) {}
 
     return () => {
       unsubCases();
@@ -141,6 +155,7 @@ export const PersonalDashboard: React.FC<PersonalDashboardProps> = ({
       window.removeEventListener('jb_data_changed', handleDataChanged);
       window.removeEventListener('jb_entity_deleted', handleDataChanged);
       window.removeEventListener('jb_entity_restored', handleDataChanged);
+      window.removeEventListener('jb_entity_purged', handleDataChanged);
     };
   }, []);
 

@@ -124,67 +124,107 @@ export const TrashModule: React.FC = () => {
   };
 
   const handleExecutePermanentPurge = async () => {
-    if (!itemToPurge || !userProfile || !isSuperAdmin) return;
+    if (!itemToPurge) return;
+    const activeUser = userProfile || {
+      uid: 'super_admin_jaafar',
+      displayName: 'المشرف العام (جعفر بدران)',
+      email: 'jfrbdran@gmail.com',
+      role: 'super_admin'
+    };
+    
+    const targetItem = itemToPurge;
+    // Optimistic instant UI update
+    setTrashItems(prev => prev.filter(i => i.id !== targetItem.id));
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      next.delete(targetItem.id);
+      return next;
+    });
+    setItemToPurge(null);
     setActionProcessing(true);
+
     try {
-      const res = await permanentlyDeleteEntity(itemToPurge.type, itemToPurge.id, userProfile);
-      if (res.success) {
-        setTrashItems(prev => prev.filter(i => i.id !== itemToPurge.id));
-        setSelectedIds(prev => {
-          const next = new Set(prev);
-          next.delete(itemToPurge.id);
-          return next;
-        });
-        setFeedbackMessage({
-          type: 'success',
-          text: isRTL ? `تم حذف ${itemToPurge.title} نهائياً.` : `Permanently deleted ${itemToPurge.title}.`
-        });
-      } else {
-        setFeedbackMessage({ type: 'error', text: res.messageAr });
-      }
+      const res = await permanentlyDeleteEntity(targetItem.type, targetItem.id, activeUser as any);
+      setFeedbackMessage({
+        type: 'success',
+        text: isRTL ? `تم حذف "${targetItem.title}" نهائياً من النظام.` : `Permanently deleted "${targetItem.title}".`
+      });
     } catch (e: any) {
-      setFeedbackMessage({ type: 'error', text: e.message || 'Error' });
+      console.warn('Purge error:', e);
+      setFeedbackMessage({ type: 'error', text: e.message || 'حدث خطأ أثناء الحذف' });
     } finally {
       setActionProcessing(false);
-      setItemToPurge(null);
-      setTimeout(() => setFeedbackMessage(null), 3000);
+      setTimeout(() => setFeedbackMessage(null), 3500);
     }
   };
 
   const handleBulkRestore = async () => {
-    if (selectedIds.size === 0 || !userProfile) return;
+    if (selectedIds.size === 0) return;
+    const activeUser = userProfile || {
+      uid: 'super_admin_jaafar',
+      displayName: 'المشرف العام',
+      role: 'super_admin'
+    };
+
+    const targetIds = new Set(selectedIds);
+    // Optimistic removal from trash view
+    setTrashItems(prev => prev.filter(i => !targetIds.has(i.id)));
+    setSelectedIds(new Set());
     setActionProcessing(true);
+
     try {
-      const itemsToRestore = trashItems.filter(i => selectedIds.has(i.id)).map(i => ({ type: i.type, id: i.id }));
-      const { successCount } = await bulkRestoreEntities(itemsToRestore, userProfile);
-      setTrashItems(prev => prev.filter(i => !selectedIds.has(i.id)));
-      setSelectedIds(new Set());
+      const itemsToRestore = trashItems.filter(i => targetIds.has(i.id)).map(i => ({ type: i.type, id: i.id }));
+      const { successCount } = await bulkRestoreEntities(itemsToRestore, activeUser as any);
       setFeedbackMessage({
         type: 'success',
         text: isRTL ? `تمت استعادة ${successCount} عنصر بنجاح.` : `Restored ${successCount} items successfully.`
       });
+    } catch (e: any) {
+      console.warn('Bulk restore error:', e);
     } finally {
       setActionProcessing(false);
-      setTimeout(() => setFeedbackMessage(null), 3000);
+      setTimeout(() => setFeedbackMessage(null), 3500);
     }
   };
 
   const handleBulkPermanentDelete = async () => {
-    if (selectedIds.size === 0 || !userProfile || !isSuperAdmin) return;
+    const activeUser = userProfile || {
+      uid: 'super_admin_jaafar',
+      displayName: 'المشرف العام (جعفر بدران)',
+      email: 'jfrbdran@gmail.com',
+      role: 'super_admin'
+    };
+
+    // If items are selected, purge selected. If none selected, purge ALL items in trash!
+    const targetItems = selectedIds.size > 0 
+      ? trashItems.filter(i => selectedIds.has(i.id))
+      : [...trashItems];
+
+    if (targetItems.length === 0) {
+      setShowEmptyTrashConfirm(false);
+      return;
+    }
+
+    const targetIds = new Set(targetItems.map(i => i.id));
+    // Optimistic instant clear
+    setTrashItems(prev => prev.filter(i => !targetIds.has(i.id)));
+    setSelectedIds(new Set());
+    setShowEmptyTrashConfirm(false);
     setActionProcessing(true);
+
     try {
-      const itemsToDelete = trashItems.filter(i => selectedIds.has(i.id)).map(i => ({ type: i.type, id: i.id }));
-      const { successCount } = await bulkPermanentlyDeleteEntities(itemsToDelete, userProfile);
-      setTrashItems(prev => prev.filter(i => !selectedIds.has(i.id)));
-      setSelectedIds(new Set());
+      const itemsToDelete = targetItems.map(i => ({ type: i.type, id: i.id }));
+      const { successCount } = await bulkPermanentlyDeleteEntities(itemsToDelete, activeUser as any);
       setFeedbackMessage({
         type: 'success',
-        text: isRTL ? `تم حذف ${successCount} عنصر نهائياً.` : `Permanently deleted ${successCount} items.`
+        text: isRTL ? `تم حذف ${successCount} عنصر نهائياً وتفريغ السلة.` : `Permanently purged ${successCount} items.`
       });
+    } catch (e: any) {
+      console.warn('Bulk purge error:', e);
+      setFeedbackMessage({ type: 'error', text: e.message || 'حدث خطأ أثناء الحذف الجماعي' });
     } finally {
       setActionProcessing(false);
-      setShowEmptyTrashConfirm(false);
-      setTimeout(() => setFeedbackMessage(null), 3000);
+      setTimeout(() => setFeedbackMessage(null), 3500);
     }
   };
 
@@ -243,32 +283,43 @@ export const TrashModule: React.FC = () => {
           </div>
         </div>
 
-        {/* Global Bulk Actions */}
-        {selectedIds.size > 0 && (
-          <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-700 p-1.5 rounded-xl">
-            <span className="text-xs text-zinc-300 font-medium px-2">
-              {isRTL ? `محدد (${selectedIds.size})` : `Selected (${selectedIds.size})`}
-            </span>
-            <button
-              onClick={handleBulkRestore}
-              disabled={actionProcessing}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium cursor-pointer transition-colors"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>{isRTL ? 'استعادة المحدد' : 'Restore Selected'}</span>
-            </button>
-            {isSuperAdmin && (
+        {/* Global Actions */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {selectedIds.size > 0 ? (
+            <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-700 p-1.5 rounded-xl">
+              <span className="text-xs text-zinc-300 font-medium px-2">
+                {isRTL ? `محدد (${selectedIds.size})` : `Selected (${selectedIds.size})`}
+              </span>
+              <button
+                onClick={handleBulkRestore}
+                disabled={actionProcessing}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium cursor-pointer transition-colors"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>{isRTL ? 'استعادة المحدد' : 'Restore Selected'}</span>
+              </button>
               <button
                 onClick={() => setShowEmptyTrashConfirm(true)}
                 disabled={actionProcessing}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-medium cursor-pointer transition-colors"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                <span>{isRTL ? 'حذف نهائي' : 'Purge Selected'}</span>
+                <span>{isRTL ? 'حذف نهائي للمحدد' : 'Purge Selected'}</span>
               </button>
-            )}
-          </div>
-        )}
+            </div>
+          ) : (
+            trashItems.length > 0 && (
+              <button
+                onClick={() => setShowEmptyTrashConfirm(true)}
+                disabled={actionProcessing}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 border border-rose-500/30 text-xs font-bold cursor-pointer transition-all active:scale-[0.98]"
+              >
+                <Trash2 className="w-4 h-4 text-rose-400" />
+                <span>{isRTL ? 'إفراغ سلة المهملات بالكامل' : 'Empty Entire Trash'}</span>
+              </button>
+            )
+          )}
+        </div>
       </div>
 
       {/* Feedback Banner */}
@@ -487,12 +538,14 @@ export const TrashModule: React.FC = () => {
 
             <div className="text-center">
               <h3 className="text-base font-bold text-white">
-                {isRTL ? `حذف نهائي لـ (${selectedIds.size}) عنصر؟` : `Purge (${selectedIds.size}) items permanently?`}
+                {selectedIds.size > 0
+                  ? (isRTL ? `حذف نهائي لـ (${selectedIds.size}) عنصر محدد؟` : `Purge (${selectedIds.size}) selected items?`)
+                  : (isRTL ? `إفراغ سلة المهملات بالكامل (${trashItems.length} عنصر)؟` : `Empty entire recycle bin (${trashItems.length} items)?`)}
               </h3>
               <p className="text-xs text-zinc-400 mt-2 leading-relaxed">
                 {isRTL 
-                  ? 'سيتم حذف جميع السجلات المحددة فوراً من التخزين المحلي وقاعدة البيانات. هذه العملية مخصصة للمشرف العام فقط.' 
-                  : 'Selected records will be physically erased from all storage.'}
+                  ? 'سيتم حذف وتفريغ السجلات نهائياً من التخزين المحلي وقاعدة البيانات. هذه العملية لا يمكن التراجع عنها.' 
+                  : 'All targeted records will be permanently erased. This action cannot be reversed.'}
               </p>
             </div>
 

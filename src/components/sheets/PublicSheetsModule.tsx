@@ -314,16 +314,34 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
         return linkData ? { ...r, ...linkData } : r;
       });
 
-      // Update tabs list if current tab wasn't there
+      // Update tabs list and save cached rows/columns per tab
       let updatedTabs = [...(target.tabs || [])];
       if (updatedTabs.length === 0) {
-        updatedTabs = [{ gid: gidToSync, name: tabNameToSync || `ورقة (${gidToSync})`, isDefault: true, rowCount: mergedRows.length }];
+        updatedTabs = [{ 
+          gid: gidToSync, 
+          name: tabNameToSync || `ورقة (${gidToSync})`, 
+          isDefault: true, 
+          rowCount: mergedRows.length,
+          columns: result.columns,
+          rows: mergedRows
+        }];
       } else {
         const tabIdx = updatedTabs.findIndex(t => t.gid === gidToSync || (tabNameToSync && t.name === tabNameToSync));
         if (tabIdx >= 0) {
-          updatedTabs[tabIdx] = { ...updatedTabs[tabIdx], rowCount: mergedRows.length };
+          updatedTabs[tabIdx] = { 
+            ...updatedTabs[tabIdx], 
+            rowCount: mergedRows.length,
+            columns: result.columns,
+            rows: mergedRows
+          };
         } else {
-          updatedTabs.push({ gid: gidToSync, name: tabNameToSync || `ورقة (${gidToSync})`, rowCount: mergedRows.length });
+          updatedTabs.push({ 
+            gid: gidToSync, 
+            name: tabNameToSync || `ورقة (${gidToSync})`, 
+            rowCount: mergedRows.length,
+            columns: result.columns,
+            rows: mergedRows
+          });
         }
       }
 
@@ -347,18 +365,42 @@ export const PublicSheetsModule: React.FC<PublicSheetsModuleProps> = ({
       console.error('Failed to sync sheet:', err);
       const updatedSheet: SavedPublicSheet = {
         ...target,
+        gid: gidToSync,
+        activeTabName: tabNameToSync,
         syncStatus: 'error',
         errorMessage: err.message || (isRTL ? 'فشل الاتصال بالشيت' : 'Connection failed')
       };
       const updatedList = savePublicSheet(updatedSheet);
       setSheets(updatedList);
-      showToast(isRTL ? `خطأ: ${err.message}` : `Error: ${err.message}`);
+      showToast(isRTL ? `خطأ في مزامنة الورقة: ${err.message}` : `Error syncing tab: ${err.message}`);
     }
   };
 
-  // Switch Active Worksheet Tab
+  // Switch Active Worksheet Tab with immediate cached rendering
   const handleSwitchTab = async (tab: SheetWorksheetTab) => {
     if (!activeSheet) return;
+
+    // 1. Immediately render cached data if available for this tab
+    const cachedRows = (tab.rows && tab.rows.length > 0) 
+      ? tab.rows 
+      : ((activeSheet.gid === tab.gid && activeSheet.rows && activeSheet.rows.length > 0) ? activeSheet.rows : []);
+    const cachedColumns = (tab.columns && tab.columns.length > 0) ? tab.columns : activeSheet.columns;
+
+    const fastSwitched: SavedPublicSheet = {
+      ...activeSheet,
+      gid: tab.gid,
+      activeTabName: tab.name,
+      rows: cachedRows.length > 0 ? cachedRows : activeSheet.rows,
+      columns: cachedColumns.length > 0 ? cachedColumns : activeSheet.columns,
+      totalRows: cachedRows.length > 0 ? cachedRows.length : activeSheet.totalRows,
+      syncStatus: 'syncing'
+    };
+
+    savePublicSheet(fastSwitched);
+    setSheets(getSavedPublicSheets());
+    setCurrentPage(1);
+
+    // 2. Fetch fresh data
     await handleSyncSheet(activeSheet.id, tab.gid, tab.name);
   };
 

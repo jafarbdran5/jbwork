@@ -486,7 +486,7 @@ export async function fetchPublicGoogleSheet(
 
   // Strategy 2: Direct CSV Export URL
   try {
-    const csvResult = await fetchViaCSV(sheetId, activeGid, urlOrId);
+    const csvResult = await fetchViaCSV(sheetId, activeGid, urlOrId, sheetName);
     if (csvResult.rows.length > 0 || csvResult.columns.length > 0) {
       return {
         ...csvResult,
@@ -500,7 +500,7 @@ export async function fetchPublicGoogleSheet(
 
   // Strategy 3: TSV Export URL
   try {
-    const tsvResult = await fetchViaTSV(sheetId, activeGid, urlOrId);
+    const tsvResult = await fetchViaTSV(sheetId, activeGid, urlOrId, sheetName);
     if (tsvResult.rows.length > 0 || tsvResult.columns.length > 0) {
       return {
         ...tsvResult,
@@ -518,6 +518,26 @@ export async function fetchPublicGoogleSheet(
 }
 
 /**
+ * Helper to check if a string is actually HTML rather than CSV/JSON data
+ */
+export function isHtmlDocument(text: string): boolean {
+  if (!text || typeof text !== 'string') return false;
+  const trimmed = text.trim().toLowerCase();
+  return (
+    trimmed.startsWith('<!doctype html') ||
+    trimmed.startsWith('<!doctype') ||
+    trimmed.startsWith('<html') ||
+    trimmed.startsWith('<head') ||
+    trimmed.includes('<html') ||
+    trimmed.includes('<head>') ||
+    trimmed.includes('<body>') ||
+    trimmed.includes('servicelogin') ||
+    trimmed.includes('accounts.google.com') ||
+    trimmed.includes('<script')
+  );
+}
+
+/**
  * Strategy 1 Implementation: Google Visualization API (With Server Proxy + Direct Fallback)
  */
 async function fetchViaGViz(sheetId: string, gid: string, sheetName?: string, originalUrl?: string): Promise<{
@@ -527,13 +547,21 @@ async function fetchViaGViz(sheetId: string, gid: string, sheetName?: string, or
   sheetTitle?: string;
 }> {
   let rawText = '';
+  const token = localStorage.getItem('jb_google_workspace_token') || '';
   
   // Try 1: Server proxy first (bypasses browser CORS completely)
   try {
     const proxyUrl = `/api/sheets/fetch-data?sheetId=${encodeURIComponent(sheetId)}&gid=${encodeURIComponent(gid)}&format=gviz${sheetName ? `&sheetName=${encodeURIComponent(sheetName)}` : ''}${originalUrl ? `&url=${encodeURIComponent(originalUrl)}` : ''}`;
-    const proxyRes = await fetch(proxyUrl);
+    const headers: Record<string, string> = { 'Accept': 'text/plain, application/json, */*' };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    const proxyRes = await fetch(proxyUrl, { headers });
     if (proxyRes.ok) {
-      rawText = await proxyRes.text();
+      const text = await proxyRes.text();
+      if (!isHtmlDocument(text)) {
+        rawText = text;
+      }
     }
   } catch (proxyErr) {
     console.warn('GViz server proxy notice:', proxyErr);
@@ -556,17 +584,21 @@ async function fetchViaGViz(sheetId: string, gid: string, sheetName?: string, or
       throw new Error(`GViz error status: ${response.status}`);
     }
 
-    rawText = await response.text();
+    const text = await response.text();
+    if (isHtmlDocument(text)) {
+      throw new Error('هذا الشيت مقفل أو يتطلب صلاحيات خاصة (يرجى جعله متاحاً لأي شخص لديه الرابط).');
+    }
+    rawText = text;
   }
 
-  if (rawText.includes('<!DOCTYPE html>') || rawText.includes('ServiceLogin') || rawText.includes('accounts.google.com')) {
+  if (isHtmlDocument(rawText)) {
     throw new Error('هذا الشيت مقفل أو يتطلب صلاحيات خاصة (يرجى جعله متاحاً لأي شخص لديه الرابط).');
   }
 
   const jsonMatch = rawText.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);?/);
   if (!jsonMatch || !jsonMatch[1]) {
-    // If the proxy returned CSV directly instead of GViz envelope, parse as CSV
-    if (rawText.includes(',') || rawText.includes('\t') || rawText.includes('\n')) {
+    // If the proxy returned CSV directly instead of GViz envelope, parse as CSV (only if not HTML)
+    if (!isHtmlDocument(rawText) && (rawText.includes(',') || rawText.includes('\t') || rawText.includes('\n'))) {
       return parseRawTableText(rawText, sheetId, gid);
     }
     throw new Error('No GViz JSON envelope found');
@@ -692,18 +724,26 @@ async function fetchViaGViz(sheetId: string, gid: string, sheetName?: string, or
 /**
  * Strategy 2 Implementation: CSV Export (With Server Proxy + Direct Fallback)
  */
-async function fetchViaCSV(sheetId: string, gid: string, originalUrl?: string): Promise<{
+async function fetchViaCSV(sheetId: string, gid: string, originalUrl?: string, sheetName?: string): Promise<{
   columns: SheetColumn[];
   rows: SheetRowItem[];
   totalRows: number;
 }> {
   let csvText = '';
+  const token = localStorage.getItem('jb_google_workspace_token') || '';
 
   try {
-    const proxyUrl = `/api/sheets/fetch-data?sheetId=${encodeURIComponent(sheetId)}&gid=${encodeURIComponent(gid)}&format=csv${originalUrl ? `&url=${encodeURIComponent(originalUrl)}` : ''}`;
-    const proxyRes = await fetch(proxyUrl);
+    const proxyUrl = `/api/sheets/fetch-data?sheetId=${encodeURIComponent(sheetId)}&gid=${encodeURIComponent(gid)}&format=csv${sheetName ? `&sheetName=${encodeURIComponent(sheetName)}` : ''}${originalUrl ? `&url=${encodeURIComponent(originalUrl)}` : ''}`;
+    const headers: Record<string, string> = { 'Accept': 'text/plain, application/json, */*' };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    const proxyRes = await fetch(proxyUrl, { headers });
     if (proxyRes.ok) {
-      csvText = await proxyRes.text();
+      const text = await proxyRes.text();
+      if (!isHtmlDocument(text)) {
+        csvText = text;
+      }
     }
   } catch (proxyErr) {
     console.warn('CSV server proxy notice:', proxyErr);
@@ -715,11 +755,15 @@ async function fetchViaCSV(sheetId: string, gid: string, originalUrl?: string): 
     if (!response.ok) {
       throw new Error(`CSV Export failed (HTTP ${response.status})`);
     }
-    csvText = await response.text();
+    const text = await response.text();
+    if (isHtmlDocument(text)) {
+      throw new Error('يتطلب تسجيل دخول Google أو صلاحية الوصول للشيت.');
+    }
+    csvText = text;
   }
 
-  if (csvText.includes('<!DOCTYPE html>') || csvText.includes('ServiceLogin')) {
-    throw new Error('يتطلب تسجيل دخول Google.');
+  if (isHtmlDocument(csvText)) {
+    throw new Error('يتطلب تسجيل دخول Google أو صلاحية الوصول للشيت.');
   }
 
   return parseRawTableText(csvText, sheetId, gid, ',');
@@ -728,18 +772,26 @@ async function fetchViaCSV(sheetId: string, gid: string, originalUrl?: string): 
 /**
  * Strategy 3 Implementation: TSV Export (With Server Proxy + Direct Fallback)
  */
-async function fetchViaTSV(sheetId: string, gid: string, originalUrl?: string): Promise<{
+async function fetchViaTSV(sheetId: string, gid: string, originalUrl?: string, sheetName?: string): Promise<{
   columns: SheetColumn[];
   rows: SheetRowItem[];
   totalRows: number;
 }> {
   let tsvText = '';
+  const token = localStorage.getItem('jb_google_workspace_token') || '';
 
   try {
-    const proxyUrl = `/api/sheets/fetch-data?sheetId=${encodeURIComponent(sheetId)}&gid=${encodeURIComponent(gid)}&format=tsv${originalUrl ? `&url=${encodeURIComponent(originalUrl)}` : ''}`;
-    const proxyRes = await fetch(proxyUrl);
+    const proxyUrl = `/api/sheets/fetch-data?sheetId=${encodeURIComponent(sheetId)}&gid=${encodeURIComponent(gid)}&format=tsv${sheetName ? `&sheetName=${encodeURIComponent(sheetName)}` : ''}${originalUrl ? `&url=${encodeURIComponent(originalUrl)}` : ''}`;
+    const headers: Record<string, string> = { 'Accept': 'text/plain, application/json, */*' };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+    const proxyRes = await fetch(proxyUrl, { headers });
     if (proxyRes.ok) {
-      tsvText = await proxyRes.text();
+      const text = await proxyRes.text();
+      if (!isHtmlDocument(text)) {
+        tsvText = text;
+      }
     }
   } catch (proxyErr) {
     console.warn('TSV server proxy notice:', proxyErr);
@@ -751,11 +803,15 @@ async function fetchViaTSV(sheetId: string, gid: string, originalUrl?: string): 
     if (!response.ok) {
       throw new Error(`TSV Export failed (HTTP ${response.status})`);
     }
-    tsvText = await response.text();
+    const text = await response.text();
+    if (isHtmlDocument(text)) {
+      throw new Error('يتطلب تسجيل دخول Google أو صلاحية الوصول للشيت.');
+    }
+    tsvText = text;
   }
 
-  if (tsvText.includes('<!DOCTYPE html>') || tsvText.includes('ServiceLogin')) {
-    throw new Error('يتطلب تسجيل دخول Google.');
+  if (isHtmlDocument(tsvText)) {
+    throw new Error('يتطلب تسجيل دخول Google أو صلاحية الوصول للشيت.');
   }
 
   return parseRawTableText(tsvText, sheetId, gid, '\t');
@@ -769,12 +825,21 @@ export function parseRawTableText(text: string, sheetId: string = 'pasted', gid:
   rows: SheetRowItem[];
   totalRows: number;
 } {
+  // Reject HTML content immediately
+  if (isHtmlDocument(text)) {
+    return { columns: [], rows: [], totalRows: 0 };
+  }
+
   const rawRows = parseCSV(text, delimiter);
   if (rawRows.length === 0) {
     return { columns: [], rows: [], totalRows: 0 };
   }
 
   const headerRow = rawRows[0];
+  // Check if headerRow looks like HTML code lines
+  if (headerRow.some(h => typeof h === 'string' && (h.includes('<html') || h.includes('<!doctype') || h.includes('<head>')))) {
+    return { columns: [], rows: [], totalRows: 0 };
+  }
   const columns: SheetColumn[] = headerRow.map((header, idx) => {
     const label = header.trim() || `العمود ${String.fromCharCode(65 + (idx % 26))}${idx >= 26 ? Math.floor(idx / 26) : ''}`;
     const lower = label.toLowerCase();

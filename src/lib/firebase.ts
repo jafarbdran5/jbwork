@@ -6,6 +6,7 @@ import {
   persistentMultipleTabManager,
   collection, 
   doc, 
+  setDoc,
   runTransaction,
   serverTimestamp,
   type Firestore 
@@ -58,28 +59,24 @@ export { db };
 // Atomic sequential case number generator: JB-YYYY-000001
 export async function generateNextCaseNumber(targetYear?: number): Promise<string> {
   const year = targetYear || new Date().getFullYear();
-  const counterDocRef = doc(db, 'caseCounters', String(year));
+  // Get sequential case number immediately (instantaneous & zero network delay)
+  const caseNumber = getNextSequentialCaseNumber(year);
 
+  // Background sync counter with Firestore if online
   try {
-    const nextNumber = await runTransaction(db, async (transaction) => {
-      const counterSnap = await transaction.get(counterDocRef);
-      let currentNumber = 0;
-      if (counterSnap.exists()) {
-        currentNumber = counterSnap.data().lastNumber || 0;
-      }
-      const newNumber = currentNumber + 1;
-      transaction.set(counterDocRef, {
+    const counterDocRef = doc(db, 'caseCounters', String(year));
+    const match = caseNumber.match(/^JB-\d+-(\d+)$/);
+    if (match && match[1]) {
+      const currentNum = parseInt(match[1], 10);
+      setDoc(counterDocRef, {
         year,
-        lastNumber: newNumber,
+        lastNumber: currentNum,
         updatedAt: serverTimestamp()
-      }, { merge: true });
-      return newNumber;
-    });
-
-    const formattedIndex = String(nextNumber).padStart(6, '0');
-    return `JB-${year}-${formattedIndex}`;
-  } catch (error) {
-    // If Firestore API is disabled, offline, or unavailable, fall back cleanly to sequential local counter
-    return getNextSequentialCaseNumber(year);
+      }, { merge: true }).catch(() => {});
+    }
+  } catch (e) {
+    // Non-blocking
   }
+
+  return caseNumber;
 }

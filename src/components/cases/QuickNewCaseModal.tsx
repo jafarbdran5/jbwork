@@ -2,11 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useI18n } from '../../lib/i18n';
 import { useAuth } from '../../lib/auth';
 import { db, generateNextCaseNumber } from '../../lib/firebase';
-import { collection, addDoc, serverTimestamp, getDocs, query, orderBy } from 'firebase/firestore';
+import { collection, addDoc, doc, setDoc, serverTimestamp, getDocs, query, orderBy } from 'firebase/firestore';
 import { CaseTypeConfig, PlatformConfig, UserProfile, CasePriority } from '../../types';
 import { DEFAULT_CASE_TYPES, DEFAULT_PLATFORMS } from '../../lib/constants';
 import { logAuditAndEvent } from '../../lib/audit';
 import { saveLocalAttachment, saveLocalCase, getLocalCases } from '../../lib/offlineStore';
+import { cleanFirestoreData } from '../../lib/googleWorkspace';
 import { detectDuplicateCase, DuplicateMatchResult } from '../../lib/duplicateDetector';
 import { DuplicateAlertModal } from './DuplicateAlertModal';
 import { mergeDataIntoExistingCase } from '../../lib/caseMergeService';
@@ -18,6 +19,8 @@ import {
   UserX, 
   Trash2, 
   AlertTriangle, 
+  AlertCircle,
+  Sparkles,
   Terminal, 
   KeyRound, 
   Lock, 
@@ -30,25 +33,25 @@ import {
   FileQuestion,
   ChevronRight,
   Globe,
-  User,
-  Phone,
-  Mail,
-  DollarSign,
-  Coins,
-  Paperclip,
-  Link as LinkIcon,
-  UploadCloud,
-  FileText,
-  Image as ImageIcon,
-  Video,
-  File,
-  Plus,
-  ClipboardPaste,
-  ExternalLink,
-  CopyCheck,
-  CheckCircle2,
-  Eye,
-  GitMerge
+  User, 
+  Phone, 
+  Mail, 
+  DollarSign, 
+  Coins, 
+  Paperclip, 
+  Link as LinkIcon, 
+  UploadCloud, 
+  FileText, 
+  Image as ImageIcon, 
+  Video, 
+  File, 
+  Plus, 
+  ClipboardPaste, 
+  ExternalLink, 
+  CopyCheck, 
+  CheckCircle2, 
+  Eye, 
+  GitMerge 
 } from 'lucide-react';
 
 interface QuickNewCaseModalProps {
@@ -127,11 +130,36 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
   const [bulkPasteText, setBulkPasteText] = useState('');
 
   const [loading, setLoading] = useState<boolean>(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   
   // Intelligent Duplicate Detection State
   const [duplicateResult, setDuplicateResult] = useState<DuplicateMatchResult | null>(null);
   const [showDuplicateModal, setShowDuplicateModal] = useState<boolean>(false);
   const [overrideDuplicate, setOverrideDuplicate] = useState<boolean>(false);
+
+  // Form Validation
+  const validateForm = (): boolean => {
+    const errors: Record<string, string> = {};
+
+    if (clientEmail && clientEmail.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(clientEmail.trim())) {
+        errors.clientEmail = isRTL 
+          ? 'صيغة البريد الإلكتروني غير صحيحة (مثال: client@example.com)' 
+          : 'Invalid email format (e.g. client@example.com)';
+      }
+    }
+
+    if (agreedAmount !== '' && (isNaN(Number(agreedAmount)) || Number(agreedAmount) < 0)) {
+      errors.agreedAmount = isRTL 
+        ? 'يرجى إدخال مبلغ مالي صحيح وموجب' 
+        : 'Please enter a valid positive number';
+    }
+
+    setFieldErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
 
   // Real-time Duplicate Check (Phone, Email, Client Name, Identifiers - NOT Case Number)
   useEffect(() => {
@@ -308,41 +336,67 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
 
   const handleCreateCase = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!userProfile) return;
+    setErrorMessage(null);
+
+    // Validate inputs
+    if (!validateForm()) {
+      setErrorMessage(
+        isRTL 
+          ? 'يرجى مراجعة الأخطاء المحددة باللون الأحمر وتصحيحها قبل المتابعة' 
+          : 'Please review and fix the highlighted field errors before proceeding'
+      );
+      return;
+    }
+
+    // Check if duplicate detected and not overridden
+    if (duplicateResult && duplicateResult.isDuplicate && !overrideDuplicate) {
+      setShowDuplicateModal(true);
+      return;
+    }
 
     setLoading(true);
+    let createdCaseId = '';
     try {
-      // Check if duplicate detected and not overridden
-      if (duplicateResult && duplicateResult.isDuplicate && !overrideDuplicate) {
-        setShowDuplicateModal(true);
-        setLoading(false);
-        return;
-      }
-
-      // 1. Generate atomic sequential case number: JB-YYYY-000001
-      const caseNumber = await generateNextCaseNumber();
-
-      // 2. Resolve default title if empty
-      const resolvedTitle = title.trim() || `${currentTypeConfig ? (isRTL ? currentTypeConfig.labelAr : currentTypeConfig.labelEn) : (isRTL ? 'قضية جديدة' : 'New Case')} - ${selectedPlatform || ''}`;
-
-      // 3. Resolve assigned employee
-      const assignedUser = teamMembers.find(u => u.uid === assignedUid) || {
-        uid: userProfile.uid,
-        displayName: userProfile.displayName,
-        email: userProfile.email
+      // Safe active user fallback
+      const activeUser = userProfile || {
+        uid: 'user_active',
+        displayName: 'أخصائي القضايا',
+        email: ''
       };
 
-      // 4. Create case document
-      const casePayload = {
+      // 1. Generate atomic sequential case number: JB-YYYY-000001 (instantaneous)
+      const caseNumber = await generateNextCaseNumber();
+
+      // 2. Generate valid Firestore Doc Reference & ID synchronously (0ms, zero network delay)
+      const caseDocRef = doc(collection(db, 'cases'));
+      const caseId = caseDocRef.id;
+      createdCaseId = caseId;
+
+      // 3. Resolve default title if empty (Empty Case Support)
+      const defaultTypeName = currentTypeConfig 
+        ? (isRTL ? currentTypeConfig.labelAr : currentTypeConfig.labelEn) 
+        : (isRTL ? 'قضية' : 'Case');
+      const defaultPlatformName = selectedPlatform ? ` - ${selectedPlatform}` : '';
+      const resolvedTitle = title.trim() || `${defaultTypeName}${defaultPlatformName}`;
+
+      // 4. Resolve assigned employee
+      const assignedUser = teamMembers.find(u => u.uid === assignedUid) || {
+        uid: activeUser.uid,
+        displayName: activeUser.displayName,
+        email: activeUser.email
+      };
+
+      // 5. Create base case payload
+      const baseCasePayload = {
         caseNumber,
         externalNumber: externalNumber.trim() || '',
         title: resolvedTitle,
-        caseType: selectedType,
+        caseType: selectedType || 'general',
         platform: selectedPlatform || '',
         status: 'new',
-        priority,
+        priority: priority || 'medium',
         assignedTo: {
-          uid: assignedUser.uid,
+          uid: assignedUser.uid || activeUser.uid,
           name: assignedUser.displayName || 'أخصائي القضايا',
           email: assignedUser.email || ''
         },
@@ -353,38 +407,37 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
           whatsapp: clientPhone.trim() || ''
         } : null,
         typeSpecificData: {
-          platform: selectedPlatform,
+          platform: selectedPlatform || '',
           ...dynamicValues
         },
         agreedAmount: Number(agreedAmount) || 0,
         totalPaid: 0,
         currency: currency || 'SYP',
         isDeleted: false,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
         createdBy: {
-          uid: userProfile.uid,
-          name: userProfile.displayName
+          uid: activeUser.uid,
+          name: activeUser.displayName || 'أخصائي'
         }
       };
 
-      let caseId = `case_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-      try {
-        const docRef = await addDoc(collection(db, 'cases'), casePayload);
-        caseId = docRef.id;
-      } catch (dbErr) {
-        console.warn('Firestore write offline, saved locally:', dbErr);
-      }
-
-      // Save locally
+      // 6. Save locally immediately to guarantee persistence and instant UI response
       saveLocalCase({
         id: caseId,
-        ...casePayload,
+        ...baseCasePayload,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
 
-      // 5. Save all attached files (cloud + local cache)
+      // 7. Non-blocking Firestore synchronization
+      setDoc(caseDocRef, cleanFirestoreData({
+        ...baseCasePayload,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      })).catch((dbErr) => {
+        console.warn('Firestore cloud sync notice (case safely persisted locally):', dbErr);
+      });
+
+      // 8. Save all attached files (local cache + non-blocking cloud sync)
       if (pendingFiles.length > 0) {
         for (const pFile of pendingFiles) {
           saveLocalAttachment({
@@ -396,11 +449,11 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
             dataUrl: pFile.base64,
             syncStatus: 'synced',
             uploadedAt: new Date().toISOString(),
-            uploaderName: userProfile.displayName,
-            uploaderUid: userProfile.uid,
+            uploaderName: activeUser.displayName,
+            uploaderUid: activeUser.uid,
           });
 
-          addDoc(collection(db, 'caseAttachments'), {
+          addDoc(collection(db, 'caseAttachments'), cleanFirestoreData({
             id: pFile.id,
             caseId,
             fileName: pFile.name,
@@ -408,13 +461,13 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
             fileSize: pFile.size,
             dataUrl: pFile.base64,
             syncStatus: 'synced',
-            uploadedBy: { uid: userProfile.uid, name: userProfile.displayName },
+            uploadedBy: { uid: activeUser.uid, name: activeUser.displayName },
             createdAt: serverTimestamp(),
-          }).catch(() => {});
+          })).catch(() => {});
         }
       }
 
-      // 6. Save all valid links
+      // 9. Save all valid links (non-blocking cloud sync)
       const validLinks = pendingLinks.filter(l => l.url.trim().length > 0);
       if (validLinks.length > 0) {
         for (const pLink of validLinks) {
@@ -423,32 +476,41 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
           if (!linkUrl.startsWith('http://') && !linkUrl.startsWith('https://')) {
             linkUrl = `https://${linkUrl}`;
           }
-          addDoc(collection(db, 'caseLinks'), {
+          addDoc(collection(db, 'caseLinks'), cleanFirestoreData({
             caseId,
             title: resolvedLinkTitle,
             url: linkUrl,
             createdAt: serverTimestamp(),
-            createdBy: { uid: userProfile.uid, name: userProfile.displayName }
-          }).catch(() => {});
+            createdBy: { uid: activeUser.uid, name: activeUser.displayName }
+          })).catch(() => {});
         }
       }
 
-      // 7. Log audit & timeline event
-      await logAuditAndEvent({
+      // 10. Log audit & timeline event (non-blocking)
+      logAuditAndEvent({
         action: 'CREATE_CASE',
         details: `تم إنشاء القضية ${caseNumber} بنجاح: ${resolvedTitle}${clientName.trim() ? ` (العميل: ${clientName.trim()})` : ''}${Number(agreedAmount) > 0 ? ` [التكلفة: ${agreedAmount} ${currency}]` : ''}${pendingFiles.length > 0 ? ` [مرفقات: ${pendingFiles.length}]` : ''}${validLinks.length > 0 ? ` [روابط: ${validLinks.length}]` : ''}`,
         entityType: 'case',
         caseId,
         entityTitle: resolvedTitle,
-        user: userProfile
-      });
+        user: activeUser
+      }).catch(() => {});
 
-      // 8. Automatically open Case Workspace
+      // 11. Instantly open Case Workspace and close modal
       onCaseCreated(caseId);
       onClose();
-    } catch (error) {
-      console.warn('Case creation fallback:', error);
-      onClose();
+    } catch (error: any) {
+      console.error('Case creation error:', error);
+      if (createdCaseId) {
+        onCaseCreated(createdCaseId);
+        onClose();
+      } else {
+        setErrorMessage(
+          isRTL 
+            ? `تعذر إتمام إنشاء القضية: ${error?.message || 'حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى.'}` 
+            : `Failed to create case: ${error?.message || 'Unexpected error occurred.'}`
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -521,6 +583,36 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
         {/* Content Form */}
         <form onSubmit={handleCreateCase} className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
           
+          {/* Explicit Error Banner if an issue occurred */}
+          {errorMessage && (
+            <div className="p-3.5 rounded-xl bg-rose-950/80 border border-rose-600/80 text-rose-200 text-xs flex items-start justify-between gap-2.5 animate-in fade-in slide-in-from-top-1">
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="font-bold text-rose-100">{isRTL ? 'تنبيه - تعذر استكمال العملية:' : 'Notice - Action Failed:'}</p>
+                  <p className="leading-relaxed">{errorMessage}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setErrorMessage(null)}
+                className="text-rose-400 hover:text-rose-200 p-1 rounded-md transition-colors shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* Friendly Guidance Hint */}
+          <div className="p-2.5 rounded-xl bg-cyan-950/40 border border-cyan-800/40 text-[11px] text-cyan-300/90 flex items-center gap-2">
+            <Sparkles className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+            <span>
+              {isRTL 
+                ? 'ملاحظة: يمكنك إنشاء القضية مباشرة حتى لو كانت فارغة أو بدون تفاصيل، وسيتم توليد رقم القضية الذري وتجهيز مساحة العمل لإكمالها لاحقاً.' 
+                : 'Note: You can create a case with empty fields; a sequential ID is automatically generated.'}
+            </span>
+          </div>
+
           {/* Step 1: Case Type Selection */}
           <div>
             <label className="block text-xs font-semibold text-slate-300 mb-2">
@@ -691,11 +783,25 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
                 <input
                   type="email"
                   value={clientEmail}
-                  onChange={(e) => setClientEmail(e.target.value)}
+                  onChange={(e) => {
+                    setClientEmail(e.target.value);
+                    if (fieldErrors.clientEmail) {
+                      setFieldErrors(prev => {
+                        const copy = { ...prev };
+                        delete copy.clientEmail;
+                        return copy;
+                      });
+                    }
+                  }}
                   placeholder="client@example.com"
-                  className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 font-mono transition-colors"
+                  className={`w-full bg-slate-950/80 border rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none font-mono transition-colors ${
+                    fieldErrors.clientEmail ? 'border-rose-500 focus:border-rose-400' : 'border-slate-800 focus:border-cyan-500'
+                  }`}
                   dir="ltr"
                 />
+                {fieldErrors.clientEmail && (
+                  <p className="text-[10px] text-rose-400 mt-1 font-medium">{fieldErrors.clientEmail}</p>
+                )}
               </div>
             </div>
 
@@ -712,14 +818,28 @@ export const QuickNewCaseModal: React.FC<QuickNewCaseModalProps> = ({
                     min="0"
                     step="any"
                     value={agreedAmount}
-                    onChange={(e) => setAgreedAmount(e.target.value)}
+                    onChange={(e) => {
+                      setAgreedAmount(e.target.value);
+                      if (fieldErrors.agreedAmount) {
+                        setFieldErrors(prev => {
+                          const copy = { ...prev };
+                          delete copy.agreedAmount;
+                          return copy;
+                        });
+                      }
+                    }}
                     placeholder={t('caseCostPlaceholder')}
-                    className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 font-mono transition-colors"
+                    className={`w-full bg-slate-950/80 border rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none font-mono transition-colors ${
+                      fieldErrors.agreedAmount ? 'border-rose-500 focus:border-rose-400' : 'border-slate-800 focus:border-cyan-500'
+                    }`}
                   />
                   <div className="absolute top-1/2 -translate-y-1/2 end-3 text-[11px] font-bold text-amber-400 pointer-events-none">
                     {currency === 'SYP' ? (isRTL ? 'ل.س' : 'SYP') : '$'}
                   </div>
                 </div>
+                {fieldErrors.agreedAmount && (
+                  <p className="text-[10px] text-rose-400 mt-1 font-medium">{fieldErrors.agreedAmount}</p>
+                )}
               </div>
 
               {/* Currency Selector (SYP / USD) */}

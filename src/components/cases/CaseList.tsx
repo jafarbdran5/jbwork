@@ -41,11 +41,10 @@ interface CaseListProps {
   myCasesOnly?: boolean;
 }
 
-// 🌟 Pure Deduplication Helper for Cases 🌟
+// 🌟 Safe Deduplication Helper for Cases 🌟
 function deduplicateCases(rawList: CaseItem[]): CaseItem[] {
   const seenIds = new Set<string>();
   const seenNumbers = new Set<string>();
-  const seenSignatures = new Set<string>();
   const result: CaseItem[] = [];
 
   for (const item of rawList) {
@@ -53,7 +52,10 @@ function deduplicateCases(rawList: CaseItem[]): CaseItem[] {
     if (item.isDeleted || (item as any)._deleted) continue;
 
     // Unique ID check
-    if (item.id && seenIds.has(item.id)) continue;
+    if (item.id) {
+      if (seenIds.has(item.id)) continue;
+      seenIds.add(item.id);
+    }
 
     // Unique Case Number check
     if (item.caseNumber && item.caseNumber.trim()) {
@@ -62,16 +64,6 @@ function deduplicateCases(rawList: CaseItem[]): CaseItem[] {
       seenNumbers.add(cleanNum);
     }
 
-    // Secondary duplicate signature (Title + Client Name)
-    const titleClean = (item.title || '').trim().toLowerCase();
-    const clientClean = (item.client?.name || '').trim().toLowerCase();
-    if (titleClean.length > 3) {
-      const signature = `${titleClean}__${clientClean}`;
-      if (seenSignatures.has(signature)) continue;
-      seenSignatures.add(signature);
-    }
-
-    if (item.id) seenIds.add(item.id);
     result.push(item);
   }
 
@@ -168,7 +160,12 @@ export const CaseList: React.FC<CaseListProps> = ({
     };
 
     const handleDataChanged = (e: any) => {
-      if (e.detail?.entityType === 'case' || e.detail?.type === 'cases' || e.detail?.type === 'bulk_purge') {
+      if (
+        e.detail?.entityType === 'case' || 
+        e.detail?.type === 'cases' || 
+        e.detail?.type === 'bulk_purge' || 
+        e.detail?.type === 'delete'
+      ) {
         syncLocal();
       }
     };
@@ -180,24 +177,43 @@ export const CaseList: React.FC<CaseListProps> = ({
     const q = query(collection(db, 'cases'));
 
     const unsubscribe = onSnapshot(q, (snap) => {
-      const list = snap.docs
-        .map(d => ({ id: d.id, ...d.data() } as CaseItem))
-        .filter(c => !c.isDeleted && !(c as any)._deleted)
-        .sort((a, b) => {
-          const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-          const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-          return timeB - timeA;
-        });
+      const remoteList = snap.docs
+        .map(d => {
+          const data = d.data();
+          let createdAt = data.createdAt;
+          if (createdAt && typeof (createdAt as any).toDate === 'function') {
+            createdAt = (createdAt as any).toDate().toISOString();
+          }
+          let updatedAt = data.updatedAt;
+          if (updatedAt && typeof (updatedAt as any).toDate === 'function') {
+            updatedAt = (updatedAt as any).toDate().toISOString();
+          }
+          return { id: d.id, ...data, createdAt, updatedAt } as CaseItem;
+        })
+        .filter(c => !c.isDeleted && !(c as any)._deleted);
 
-      if (list.length > 0) {
-        const cleanList = deduplicateCases(list);
-        setCases(cleanList);
-        try {
-          localStorage.setItem('jb_cached_cases', JSON.stringify(cleanList));
-        } catch (_) {}
-      } else {
-        syncLocal();
+      const localList = getLocalCases().filter(c => !c.isDeleted && !(c as any)._deleted);
+
+      // Merge local and remote list to guarantee instant display of newly created items
+      const mergedMap = new Map<string, CaseItem>();
+      for (const item of localList) {
+        if (item.id) mergedMap.set(item.id, item);
       }
+      for (const item of remoteList) {
+        if (item.id) mergedMap.set(item.id, { ...(mergedMap.get(item.id) || {}), ...item });
+      }
+
+      const mergedList = Array.from(mergedMap.values()).sort((a, b) => {
+        const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return timeB - timeA;
+      });
+
+      const cleanList = deduplicateCases(mergedList);
+      setCases(cleanList);
+      try {
+        localStorage.setItem('jb_cached_cases', JSON.stringify(cleanList));
+      } catch (_) {}
       setLoading(false);
     }, (err) => {
       console.warn('CaseList query fallback:', err);
@@ -286,10 +302,10 @@ export const CaseList: React.FC<CaseListProps> = ({
       // 2. Save directly to local storage cache
       saveLocalCase(updatedCase);
 
-      // 3. Update Firestore Document
+      // 3. Update Firestore Document (non-blocking background sync)
       try {
         const caseDocRef = doc(db, 'cases', editingCase.id);
-        await updateDoc(caseDocRef, {
+        updateDoc(caseDocRef, {
           title: updatedCase.title,
           caseType: updatedCase.caseType,
           externalNumber: updatedCase.externalNumber || null,
@@ -304,38 +320,39 @@ export const CaseList: React.FC<CaseListProps> = ({
           nextFollowUp: updatedCase.nextFollowUp || null,
           assignedTo: updatedCase.assignedTo || null,
           updatedAt: serverTimestamp()
+        }).catch((dbErr) => {
+          console.warn('Firestore update background notice, saved locally:', dbErr);
         });
 
         // If duplicate docs with same caseNumber exist, update them too
         if (editingCase.caseNumber) {
           const qDup = query(collection(db, 'cases'), where('caseNumber', '==', editingCase.caseNumber));
-          const dupSnap = await getDocs(qDup);
-          dupSnap.forEach(async (d) => {
-            if (d.id !== editingCase.id) {
-              try {
-                await updateDoc(doc(db, 'cases', d.id), {
+          getDocs(qDup).then((dupSnap) => {
+            dupSnap.forEach((d) => {
+              if (d.id !== editingCase.id) {
+                updateDoc(doc(db, 'cases', d.id), {
                   title: updatedCase.title,
                   status: updatedCase.status,
                   priority: updatedCase.priority,
                   updatedAt: serverTimestamp()
-                });
-              } catch (_) {}
-            }
-          });
+                }).catch(() => {});
+              }
+            });
+          }).catch(() => {});
         }
       } catch (dbErr) {
         console.warn('Firestore update error, saved locally:', dbErr);
       }
 
-      // 4. Log Audit Event
-      await logAuditAndEvent({
+      // 4. Log Audit Event (non-blocking)
+      logAuditAndEvent({
         action: 'UPDATE_CASE',
         details: `تعديل تفاصيل القضية ${updatedCase.caseNumber} - ${updatedCase.title}`,
         entityType: 'case',
         caseId: editingCase.id,
         entityTitle: updatedCase.title,
         user: userProfile || { uid: 'user', displayName: 'المستخدم' }
-      });
+      }).catch(() => {});
 
       // 5. Broadcast global data changed
       window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'cases', entityType: 'case', caseId: editingCase.id } }));
@@ -383,27 +400,24 @@ export const CaseList: React.FC<CaseListProps> = ({
         localStorage.setItem('jb_cached_cases', JSON.stringify(all));
       } catch (_) {}
 
-      // 3. Call unified deletion service (moves to Recycle Bin)
-      try {
-        await deleteEntity('case', target.id, userProfile, {
-          customTitle: `${target.caseNumber || ''} - ${target.title || ''}`,
-          reason: 'حذف مباشر من قائمة القضايا'
-        });
-      } catch (delErr) {
-        console.warn('deleteEntity warning:', delErr);
-      }
+      // 3. Call unified deletion service (moves to Recycle Bin) (non-blocking)
+      deleteEntity('case', target.id, userProfile, {
+        customTitle: `${target.caseNumber || ''} - ${target.title || ''}`,
+        reason: 'حذف مباشر من قائمة القضايا'
+      }).catch((delErr) => {
+        console.warn('deleteEntity notice:', delErr);
+      });
 
-      // 4. Delete Firestore Document and any identical duplicates
+      // 4. Delete Firestore Document and any identical duplicates (non-blocking)
       try {
-        await deleteDoc(doc(db, 'cases', target.id));
+        deleteDoc(doc(db, 'cases', target.id)).catch(() => {});
         if (target.caseNumber) {
           const qDup = query(collection(db, 'cases'), where('caseNumber', '==', target.caseNumber));
-          const dupSnap = await getDocs(qDup);
-          dupSnap.forEach(async (d) => {
-            try {
-              await deleteDoc(doc(db, 'cases', d.id));
-            } catch (_) {}
-          });
+          getDocs(qDup).then(dupSnap => {
+            dupSnap.forEach((d) => {
+              deleteDoc(doc(db, 'cases', d.id)).catch(() => {});
+            });
+          }).catch(() => {});
         }
       } catch (_) {}
 

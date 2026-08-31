@@ -519,7 +519,13 @@ function MainAppShell() {
             )}
 
             {activeView === 'support_portals' && (
-              <SupportPortalsModule onSelectCase={handleSelectCase} />
+              <SupportPortalsModule 
+                onSelectCase={handleSelectCase} 
+                onOpenQuickCaseWithData={(prefill) => {
+                  setQuickCaseInitialData(prefill);
+                  setIsQuickCaseOpen(true);
+                }}
+              />
             )}
 
             {activeView === 'app_customizer' && (

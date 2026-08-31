@@ -1026,15 +1026,15 @@ export const CaseWorkspace: React.FC<CaseWorkspaceProps> = ({ caseId, onBack }) 
       localStorage.setItem('jb_cached_cases', JSON.stringify(all));
     } catch (_) {}
 
-    // 2. Unified deletion service
-    await deleteEntity('case', caseId, userProfile, {
+    // 2. Unified deletion service (non-blocking)
+    deleteEntity('case', caseId, userProfile, {
       customTitle: `${caseData.caseNumber || ''} - ${caseData.title || ''}`,
       reason: 'نقل القضية من مساحة العمل إلى سلة المهملات'
-    });
+    }).catch(() => {});
 
-    // 3. Direct Firestore delete
+    // 3. Direct Firestore delete (non-blocking)
     try {
-      await deleteDoc(doc(db, 'cases', caseId));
+      deleteDoc(doc(db, 'cases', caseId)).catch(() => {});
     } catch (_) {}
 
     // 4. Global events

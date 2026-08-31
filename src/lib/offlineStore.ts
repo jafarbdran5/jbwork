@@ -198,13 +198,27 @@ export function getLocalCases(): any[] {
 export function saveLocalCase(caseItem: any) {
   try {
     const current = getLocalCases();
-    const existingIndex = current.findIndex((c: any) => c.id === caseItem.id || (c.caseNumber && c.caseNumber === caseItem.caseNumber));
+    const safeCreatedAt = typeof caseItem.createdAt === 'string' 
+      ? caseItem.createdAt 
+      : (caseItem.createdAt?.toDate ? caseItem.createdAt.toDate().toISOString() : new Date().toISOString());
+    const safeUpdatedAt = typeof caseItem.updatedAt === 'string' 
+      ? caseItem.updatedAt 
+      : (caseItem.updatedAt?.toDate ? caseItem.updatedAt.toDate().toISOString() : new Date().toISOString());
+
+    const safeCase = {
+      ...caseItem,
+      createdAt: safeCreatedAt,
+      updatedAt: safeUpdatedAt
+    };
+
+    const existingIndex = current.findIndex((c: any) => c.id === safeCase.id || (c.caseNumber && c.caseNumber === safeCase.caseNumber));
     if (existingIndex >= 0) {
-      current[existingIndex] = { ...current[existingIndex], ...caseItem };
+      current[existingIndex] = { ...current[existingIndex], ...safeCase };
     } else {
-      current.unshift(caseItem);
+      current.unshift(safeCase);
     }
     localStorage.setItem(LOCAL_CASES_KEY, JSON.stringify(current));
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { entityType: 'case', type: 'cases', caseId: safeCase.id } }));
   } catch (e) {
     console.warn('Failed to save case locally:', e);
   }
@@ -214,6 +228,7 @@ export function removeLocalCase(id: string) {
   try {
     const current = getLocalCases().filter((c: any) => c.id !== id && c.caseNumber !== id);
     localStorage.setItem(LOCAL_CASES_KEY, JSON.stringify(current));
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { entityType: 'case', type: 'cases', caseId: id } }));
   } catch (e) {
     console.warn(e);
   }

@@ -148,14 +148,12 @@ export async function deleteEntity(
           } catch (_) {}
         }
 
-        // Firestore setDoc with merge for guaranteed creation/update
+        // Firestore setDoc with merge for guaranteed creation/update (non-blocking)
         try {
-          await setDoc(doc(db, 'cases', entityId), tombstoneFields, { merge: true });
-        } catch (_) {
-          try {
-            await updateDoc(doc(db, 'cases', entityId), tombstoneFields);
-          } catch (_) {}
-        }
+          setDoc(doc(db, 'cases', entityId), tombstoneFields, { merge: true }).catch(() => {
+            updateDoc(doc(db, 'cases', entityId), tombstoneFields).catch(() => {});
+          });
+        } catch (_) {}
         break;
       }
 
@@ -173,11 +171,11 @@ export async function deleteEntity(
           });
         }
         try {
-          await updateDoc(doc(db, 'users', entityId), {
+          updateDoc(doc(db, 'users', entityId), {
             ...tombstoneFields,
             status: 'deleted',
             isActive: false
-          });
+          }).catch(() => {});
         } catch (_) {}
         break;
       }
@@ -200,7 +198,7 @@ export async function deleteEntity(
           } catch (_) {}
         }
         try {
-          await updateDoc(doc(db, 'tasks', entityId), tombstoneFields);
+          updateDoc(doc(db, 'tasks', entityId), tombstoneFields).catch(() => {});
         } catch (_) {}
         break;
       }
@@ -222,7 +220,7 @@ export async function deleteEntity(
           } catch (_) {}
         }
         try {
-          await updateDoc(doc(db, 'reminders', entityId), tombstoneFields);
+          updateDoc(doc(db, 'reminders', entityId), tombstoneFields).catch(() => {});
         } catch (_) {}
         break;
       }
@@ -239,7 +237,7 @@ export async function deleteEntity(
           });
         }
         try {
-          await updateDoc(doc(db, 'attachments', entityId), tombstoneFields);
+          updateDoc(doc(db, 'attachments', entityId), tombstoneFields).catch(() => {});
         } catch (_) {}
         break;
       }
@@ -261,7 +259,7 @@ export async function deleteEntity(
           } catch (_) {}
         }
         try {
-          await updateDoc(doc(db, 'notes', entityId), tombstoneFields);
+          updateDoc(doc(db, 'notes', entityId), tombstoneFields).catch(() => {});
         } catch (_) {}
         break;
       }
@@ -285,7 +283,7 @@ export async function deleteEntity(
           } catch (_) {}
         }
         try {
-          await updateDoc(doc(db, entityType === 'payment' ? 'payments' : entityType === 'expense' ? 'expenses' : 'invoices', entityId), tombstoneFields);
+          updateDoc(doc(db, entityType === 'payment' ? 'payments' : entityType === 'expense' ? 'expenses' : 'invoices', entityId), tombstoneFields).catch(() => {});
         } catch (_) {}
         break;
       }
@@ -307,7 +305,7 @@ export async function deleteEntity(
           } catch (_) {}
         }
         try {
-          await updateDoc(doc(db, 'projects', entityId), tombstoneFields);
+          updateDoc(doc(db, 'projects', entityId), tombstoneFields).catch(() => {});
         } catch (_) {}
         break;
       }
@@ -316,12 +314,10 @@ export async function deleteEntity(
         // Generic handling for any other collection
         const colName = entityType.endsWith('s') ? entityType : `${entityType}s`;
         try {
-          await updateDoc(doc(db, colName, entityId), tombstoneFields);
-        } catch (_) {
-          try {
-            await updateDoc(doc(db, entityType, entityId), tombstoneFields);
-          } catch (_) {}
-        }
+          updateDoc(doc(db, colName, entityId), tombstoneFields).catch(() => {
+            updateDoc(doc(db, entityType, entityId), tombstoneFields).catch(() => {});
+          });
+        } catch (_) {}
         break;
       }
     }
@@ -349,16 +345,16 @@ export async function deleteEntity(
       } catch (_) {}
     }
 
-    // Audit log
+    // Audit log (non-blocking)
     if (userProfile) {
-      await logAuditAndEvent({
+      logAuditAndEvent({
         action: `DELETE_${entityType.toUpperCase()}`,
         details: `حذف ${getEntityTypeLabelAr(entityType)}: ${titleForAudit}`,
         entityType: entityType as any,
         entityId,
         entityTitle: titleForAudit,
         user: userProfile
-      });
+      }).catch(() => {});
     }
 
     return {

@@ -86,6 +86,9 @@ import {
 } from 'lucide-react';
 import { SheetStatsCards } from './SheetStatsCards';
 import { AddSheetModal } from './AddSheetModal';
+import { EditSheetModal } from './EditSheetModal';
+import { ManageSheetTabsModal } from './ManageSheetTabsModal';
+import { AllSheetsManagerView } from './AllSheetsManagerView';
 import { SheetTableView } from './SheetTableView';
 import { SheetCardsView } from './SheetCardsView';
 import { LinkCaseModal } from './LinkCaseModal';
@@ -160,8 +163,8 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
   const { isDark } = useTheme();
   const { userProfile } = useAuth();
 
-  // Top Section Mode: Google Sheets Hub vs Firestore DB
-  const [sectionMode, setSectionMode] = useState<'sheets_hub' | 'firestore_db'>('sheets_hub');
+  // Top Section Mode: Google Sheets Hub vs All Sheets Manager vs Firestore DB
+  const [sectionMode, setSectionMode] = useState<'sheets_hub' | 'all_sheets_manager' | 'firestore_db'>('sheets_hub');
 
   // ==========================================
   // 1. GOOGLE SHEETS STATE & LOGIC
@@ -176,6 +179,10 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
   // Sheets Modals & Form State
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isAddTabModalOpen, setIsAddTabModalOpen] = useState(false);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [sheetToEdit, setSheetToEdit] = useState<SavedPublicSheet | null>(null);
+  const [isManageTabsModalOpen, setIsManageTabsModalOpen] = useState(false);
+  const [sheetToManageTabs, setSheetToManageTabs] = useState<SavedPublicSheet | null>(null);
   const [isLinkToCaseModalOpen, setIsLinkToCaseModalOpen] = useState(false);
   const [inspectingRow, setInspectingRow] = useState<SheetRowItem | null>(null);
   const [linkingRow, setLinkingRow] = useState<SheetRowItem | null>(null);
@@ -278,6 +285,18 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
     return sheets.find(s => s.id === selectedSheetId) || sheets[0] || null;
   }, [sheets, selectedSheetId]);
 
+  // Handle Sheet Selection
+  const handleSelectSheet = (sheetId: string) => {
+    setSelectedSheetId(sheetId);
+    setCurrentPage(1);
+    setSearchQuery('');
+    setSectionMode('sheets_hub');
+    const target = sheets.find(s => s.id === sheetId);
+    if (target && (!target.rows || target.rows.length === 0)) {
+      handleSyncSheet(target);
+    }
+  };
+
   // Auto-discover worksheets for current sheet if fewer than 2 tabs
   useEffect(() => {
     if (!currentSheet || !currentSheet.sheetId || !currentSheet.url) return;
@@ -303,29 +322,51 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
     }
   }, [currentSheet?.id, currentSheet?.sheetId]);
 
-  // Handle Worksheet Tab Switch
+  // Handle Worksheet Tab Switch (Preserving cached data & instantaneous UI update)
   const handleSwitchTab = async (sheetId: string, tab: SheetWorksheetTab) => {
     const target = sheets.find(s => s.id === sheetId);
     if (!target) return;
 
-    // Set active tab locally
+    // Check if target tab has cached rows & columns
+    const cachedRows = (tab.rows && tab.rows.length > 0) ? tab.rows : ((target.gid === tab.gid && target.rows.length > 0) ? target.rows : []);
+    const cachedColumns = (tab.columns && tab.columns.length > 0) ? tab.columns : target.columns;
+
+    // Set active tab locally with immediate render
     const updatedSheet: SavedPublicSheet = {
       ...target,
       gid: tab.gid,
       activeTabName: tab.name,
+      rows: cachedRows.length > 0 ? cachedRows : target.rows,
+      columns: cachedColumns.length > 0 ? cachedColumns : target.columns,
+      totalRows: cachedRows.length > 0 ? cachedRows.length : (target.rows?.length || 0),
       syncStatus: 'syncing'
     };
     savePublicSheet(updatedSheet);
     setSheets(getSavedPublicSheets());
+    setCurrentPage(1);
     showToast(`جاري التبديل إلى ورقة العمل "${tab.name}"...`);
 
     try {
       const res = await fetchPublicGoogleSheet(target.url, tab.gid, tab.name);
+      
+      const updatedTabs = (target.tabs || []).map(t => {
+        if (t.gid === tab.gid) {
+          return {
+            ...t,
+            rowCount: res.totalRows,
+            columns: res.columns,
+            rows: res.rows
+          };
+        }
+        return t;
+      });
+
       const refreshed: SavedPublicSheet = {
         ...updatedSheet,
         columns: res.columns,
         rows: res.rows,
         totalRows: res.totalRows,
+        tabs: updatedTabs,
         lastSyncedAt: new Date().toISOString(),
         syncStatus: 'success',
         errorMessage: undefined
@@ -334,15 +375,19 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
       setSheets(getSavedPublicSheets());
       showToast(`✓ تم تحميل بيانات ورقة "${tab.name}" (${res.totalRows} صف)`);
     } catch (e: any) {
-      console.error('Switch tab error:', e);
+      console.warn('Switch tab fetch warning:', e);
       const errSheet: SavedPublicSheet = {
         ...updatedSheet,
-        syncStatus: 'error',
+        syncStatus: updatedSheet.rows.length > 0 ? 'success' : 'error',
         errorMessage: e.message || String(e)
       };
       savePublicSheet(errSheet);
       setSheets(getSavedPublicSheets());
-      showToast(`✕ تعذر جلب بيانات ورقة "${tab.name}": ${e.message || e}`);
+      if (updatedSheet.rows.length === 0) {
+        showToast(`✕ تعذر جلب بيانات ورقة "${tab.name}": ${e.message || e}`);
+      } else {
+        showToast(`✓ تم التبديل إلى "${tab.name}" وعرض البيانات المحفوظة`);
+      }
     }
   };
 
@@ -1151,7 +1196,19 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
                 }`}
               >
                 <FileSpreadsheet className="w-3.5 h-3.5" />
-                <span>أوراق Google Sheets ({sheets.length})</span>
+                <span>استعراض الجداول والبيانات</span>
+              </button>
+
+              <button
+                onClick={() => setSectionMode('all_sheets_manager')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                  sectionMode === 'all_sheets_manager'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : isDark ? 'text-zinc-400 hover:text-white' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>📑 إدارة كافة الأوراق والجداول ({sheets.length})</span>
               </button>
 
               <button
@@ -1212,10 +1269,7 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
                   return (
                     <button
                       key={s.id}
-                      onClick={() => {
-                        setSelectedSheetId(s.id);
-                        setCurrentPage(1);
-                      }}
+                      onClick={() => handleSelectSheet(s.id)}
                       className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 shrink-0 cursor-pointer ${
                         isSelected
                           ? 'bg-emerald-600 text-white border-emerald-500 shadow-xs'
@@ -1277,6 +1331,36 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
                       <option value="general" className={isDark ? 'bg-zinc-900 text-white' : 'bg-white text-slate-900'}>📊 جدول عام</option>
                     </select>
                   </div>
+
+                  {/* Edit Sheet Details Button */}
+                  <button
+                    onClick={() => {
+                      setSheetToEdit(currentSheet);
+                      setIsEditModalOpen(true);
+                    }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 cursor-pointer ${
+                      isDark ? 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200'
+                    }`}
+                    title="تعديل بيانات الجدول والربط"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                    <span>تعديل الشيت</span>
+                  </button>
+
+                  {/* Manage Tabs Button */}
+                  <button
+                    onClick={() => {
+                      setSheetToManageTabs(currentSheet);
+                      setIsManageTabsModalOpen(true);
+                    }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 cursor-pointer ${
+                      isDark ? 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:text-white' : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200'
+                    }`}
+                    title="إدارة أوراق العمل (Tabs)"
+                  >
+                    <Layers className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>إدارة الأوراق</span>
+                  </button>
 
                   <button
                     onClick={() => handleSyncSheet(currentSheet)}
@@ -1592,6 +1676,28 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
       )}
 
       {/* ========================================== */}
+      {/* SECTION: ALL SHEETS & WORKSHEETS MANAGER   */}
+      {/* ========================================== */}
+      {sectionMode === 'all_sheets_manager' && (
+        <AllSheetsManagerView
+          sheets={sheets}
+          selectedSheetId={selectedSheetId}
+          onSelectSheet={handleSelectSheet}
+          onAddNewSheet={() => setIsAddModalOpen(true)}
+          onEditSheet={(sheet) => {
+            setSheetToEdit(sheet);
+            setIsEditModalOpen(true);
+          }}
+          onManageTabs={(sheet) => {
+            setSheetToManageTabs(sheet);
+            setIsManageTabsModalOpen(true);
+          }}
+          onDeleteSheet={(sheetId) => handleDeleteSheet(sheetId)}
+          onSyncSheet={(sheet) => handleSyncSheet(sheet)}
+        />
+      )}
+
+      {/* ========================================== */}
       {/* SECTION 2: FIRESTORE EXTERNAL REQUESTS DB */}
       {/* ========================================== */}
       {sectionMode === 'firestore_db' && (
@@ -1868,6 +1974,66 @@ export const ExternalRequestsModule: React.FC<ExternalRequestsModuleProps> = ({
           </div>
         </div>
       )}
+
+      {/* ========================================== */}
+      {/* MODAL: EDIT SHEET METADATA & SETTINGS     */}
+      {/* ========================================== */}
+      <EditSheetModal
+        isOpen={isEditModalOpen}
+        sheet={sheetToEdit}
+        onClose={() => {
+          setIsEditModalOpen(false);
+          setSheetToEdit(null);
+        }}
+        onSheetUpdated={(updated) => {
+          setSheets(getSavedPublicSheets());
+          if (selectedSheetId === updated.id) {
+            setSelectedSheetId(updated.id);
+          }
+          showToast(`✓ تم حفظ تعديلات جدول "${updated.title}"`);
+        }}
+        onSave={(updated) => {
+          setSheets(getSavedPublicSheets());
+          if (selectedSheetId === updated.id) {
+            setSelectedSheetId(updated.id);
+          }
+          showToast(`✓ تم حفظ تعديلات جدول "${updated.title}"`);
+        }}
+      />
+
+      {/* ========================================== */}
+      {/* MODAL: MANAGE SHEET TABS & GIDS           */}
+      {/* ========================================== */}
+      <ManageSheetTabsModal
+        isOpen={isManageTabsModalOpen}
+        sheet={sheetToManageTabs}
+        onClose={() => {
+          setIsManageTabsModalOpen(false);
+          setSheetToManageTabs(null);
+        }}
+        onSheetUpdated={(updated) => {
+          setSheets(getSavedPublicSheets());
+          if (selectedSheetId === updated.id) {
+            setSelectedSheetId(updated.id);
+          }
+          showToast(`✓ تم تحديث أوراق عمل "${updated.title}"`);
+        }}
+        onSave={(updated) => {
+          setSheets(getSavedPublicSheets());
+          if (selectedSheetId === updated.id) {
+            setSelectedSheetId(updated.id);
+          }
+          showToast(`✓ تم تحديث أوراق عمل "${updated.title}"`);
+        }}
+        onSelectTab={(sheetId, tab) => {
+          handleSwitchTab(sheetId, tab);
+        }}
+        onSwitchTab={(tab) => {
+          if (sheetToManageTabs) {
+            handleSwitchTab(sheetToManageTabs.id, tab);
+          }
+        }}
+      />
 
       {/* ========================================== */}
       {/* MODAL: LINK ROW TO EXISTING CASE */}

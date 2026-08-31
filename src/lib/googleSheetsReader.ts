@@ -16,6 +16,8 @@ export interface SheetWorksheetTab {
   name: string;
   isDefault?: boolean;
   rowCount?: number;
+  columns?: SheetColumn[];
+  rows?: SheetRowItem[];
 }
 
 export interface SheetColumn {

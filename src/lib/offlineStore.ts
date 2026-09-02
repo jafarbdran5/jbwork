@@ -20,6 +20,8 @@ const LOCAL_CASES_KEY = 'jb_cached_cases';
 const LOCAL_TASKS_KEY = 'jb_cached_tasks';
 const LOCAL_RECEPTION_REQUESTS_KEY = 'jb_cached_reception_requests';
 const LOCAL_CLIENTS_KEY = 'jb_cached_clients';
+const LOCAL_CONTENT_KEY = 'jb_cached_content_studio';
+const LOCAL_KNOWLEDGE_KEY = 'jb_cached_knowledge_base';
 const LOCAL_CASE_COUNTER_PREFIX = 'jb_case_counter_';
 
 // -------------------------------------------------------------
@@ -134,6 +136,84 @@ export function removeLocalAllClient(id: string) {
     const list = getLocalAllClients().filter((c: any) => c.id !== id);
     localStorage.setItem(LOCAL_CLIENTS_KEY, JSON.stringify(list));
     window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'clients' } }));
+  } catch (e) {
+    console.warn(e);
+  }
+}
+
+// -------------------------------------------------------------
+// CONTENT STUDIO HELPERS
+// -------------------------------------------------------------
+export function getLocalContentItems(): any[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_CONTENT_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw);
+  } catch (e) {
+    return [];
+  }
+}
+
+export function saveLocalContentItem(item: any) {
+  try {
+    const list = getLocalContentItems();
+    const idx = list.findIndex((c: any) => c.id === item.id);
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], ...item, updatedAt: new Date().toISOString() };
+    } else {
+      list.unshift({ ...item, createdAt: item.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() });
+    }
+    localStorage.setItem(LOCAL_CONTENT_KEY, JSON.stringify(list));
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'content_studio' } }));
+  } catch (e) {
+    console.warn('Failed to save content item locally:', e);
+  }
+}
+
+export function removeLocalContentItem(id: string) {
+  try {
+    const list = getLocalContentItems().filter((c: any) => c.id !== id);
+    localStorage.setItem(LOCAL_CONTENT_KEY, JSON.stringify(list));
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'content_studio' } }));
+  } catch (e) {
+    console.warn(e);
+  }
+}
+
+// -------------------------------------------------------------
+// KNOWLEDGE BASE HELPERS
+// -------------------------------------------------------------
+export function getLocalKnowledgeItems(): any[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_KNOWLEDGE_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw);
+  } catch (e) {
+    return [];
+  }
+}
+
+export function saveLocalKnowledgeItem(item: any) {
+  try {
+    const list = getLocalKnowledgeItems();
+    const idx = list.findIndex((k: any) => k.id === item.id);
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], ...item, updatedAt: new Date().toISOString() };
+    } else {
+      list.unshift({ ...item, createdAt: item.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() });
+    }
+    localStorage.setItem(LOCAL_KNOWLEDGE_KEY, JSON.stringify(list));
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'knowledge_base' } }));
+  } catch (e) {
+    console.warn('Failed to save knowledge item locally:', e);
+  }
+}
+
+export function removeLocalKnowledgeItem(id: string) {
+  try {
+    const list = getLocalKnowledgeItems().filter((k: any) => k.id !== id);
+    localStorage.setItem(LOCAL_KNOWLEDGE_KEY, JSON.stringify(list));
+    window.dispatchEvent(new CustomEvent('jb_data_changed', { detail: { type: 'knowledge_base' } }));
   } catch (e) {
     console.warn(e);
   }
